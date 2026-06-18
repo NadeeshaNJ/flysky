@@ -1,0 +1,21 @@
+# ROS 2 / colcon workspace artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+
+# Kinect / libfreenect firmware (downloaded locally, do not commit)
+.libfreenect/
+*.bin
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,11 @@
+pet_behavior_node:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel
+    sound_topic: /commands/sound
+    target_topic: /vision/target
+    gesture_topic: /gesture/tracking
+    linear_speed: 0.12       # m/s  (gentle indoor speed)
+    angular_speed: 0.6       # rad/s
+    center_gain: 0.8         # P-gain for face centring
+    control_hz: 10.0
+    input_timeout: 1.0       # s, watchdog stop on stale input

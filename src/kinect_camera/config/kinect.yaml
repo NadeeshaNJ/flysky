@@ -1,0 +1,6 @@
+kinect_rgbd:
+  ros__parameters:
+    rgb_topic: /kinect/rgb/image_raw
+    depth_topic: /kinect/depth/image_raw
+    frame_rate: 30.0
+    frame_id: kinect_rgb_optical_frame
