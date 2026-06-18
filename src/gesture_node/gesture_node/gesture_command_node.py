@@ -42,7 +42,7 @@ class GestureCommandNode(Node):
         self.declare_parameter('score_threshold', 0.5)
         self.declare_parameter('conf_threshold', 0.6)
         self.declare_parameter('process_hz', 12.0)   # cap inference rate
-        self.declare_parameter('swipe_dx', 0.5)
+        self.declare_parameter('swipe_dx', 0.35)
         self.declare_parameter('debug', False)
 
         rgb_topic = self.get_parameter('rgb_topic').value

@@ -199,13 +199,8 @@ class PetBehaviorNode(Node):
             self._run_maneuver()
             return
 
-        # idle: hold still, and wiggle every period while a face is around.
+        # idle: hold still.
         self.publish_stop()
-        now = self._now()
-        if (now - self.last_face) <= self.face_memory and \
-                (now - self.last_wiggle) >= self.idle_wiggle_period:
-            self.last_wiggle = now
-            self._start_maneuver(self._wag_steps(0.25, cycles=2), 'wiggle')
 
     def _run_maneuver(self):
         if self.step is None:

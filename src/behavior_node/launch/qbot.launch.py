@@ -21,6 +21,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _kobuki_params():
@@ -32,12 +33,18 @@ def _kobuki_params():
 def generate_launch_description():
     use_kinect = LaunchConfiguration('use_kinect')
     use_base = LaunchConfiguration('use_base')
+    linear_speed = LaunchConfiguration('linear_speed')
+    turn_speed = LaunchConfiguration('turn_speed')
 
     return LaunchDescription([
         DeclareLaunchArgument('use_kinect', default_value='true',
                               description='Start the Kinect RGB-D driver node.'),
         DeclareLaunchArgument('use_base', default_value='true',
                               description='Start the Kobuki base driver.'),
+        DeclareLaunchArgument('linear_speed', default_value='0.12',
+                              description='Drive speed m/s (lower = gentler).'),
+        DeclareLaunchArgument('turn_speed', default_value='1.0',
+                              description='Turn speed rad/s (lower = gentler).'),
 
         # Kobuki mobile base driver (subscribes /commands/velocity, publishes /odom).
         Node(
@@ -70,6 +77,8 @@ def generate_launch_description():
             parameters=[{
                 'cmd_vel_topic': '/commands/velocity',
                 'sound_topic': '/qbot/sound',
+                'linear_speed': ParameterValue(linear_speed, value_type=float),
+                'turn_speed': ParameterValue(turn_speed, value_type=float),
             }],
         ),
     ])

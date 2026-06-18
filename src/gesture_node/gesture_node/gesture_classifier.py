@@ -41,7 +41,7 @@ class GestureClassifier:
                  stop_hold=0.3,        # s open palm must persist
                  back_hold=1.0,        # s fist must persist
                  swipe_window=0.7,     # s to measure a swipe
-                 swipe_dx=0.5,         # min net horizontal travel (normalised)
+                 swipe_dx=0.35,        # min net horizontal travel (normalised)
                  wag_window=1.0,       # s to measure a wag
                  wag_reversals=3,      # direction changes for a wag
                  rotate_window=2.0,    # s to accumulate finger circle
