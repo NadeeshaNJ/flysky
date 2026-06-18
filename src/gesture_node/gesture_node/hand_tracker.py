@@ -39,6 +39,7 @@ class HandFeatures:
     tip_x: float = 0.0       # index fingertip, normalised (for finger-circle)
     tip_y: float = 0.0
     index_only: bool = False  # pointing pose (only index extended)
+    thumb_down: bool = False  # thumbs-down pose (fist + thumb pointing down)
 
 
 class HandLandmarkTracker:
@@ -75,6 +76,12 @@ class HandLandmarkTracker:
         fingers = int(sum(ups) + thumb)
         index_only = bool(ups[0] and not ups[1] and not ups[2] and not ups[3])
 
+        # Thumbs-down: the four fingers are curled and the thumb points downward
+        # (tip below its own MCP joint in image-y). Orientation-robust enough to
+        # distinguish from a plain fist (thumb tucked, not pointing down).
+        thumb_dy = lms[THUMB_TIP][1] - lms[THUMB_MCP][1]   # +ve = tip below MCP
+        thumb_down = bool(sum(ups) == 0 and thumb_dy > 18)
+
         palm_c = lms[PALM_IDS].mean(axis=0)
         tip = lms[INDEX_TIP]
         return HandFeatures(
@@ -85,4 +92,5 @@ class HandLandmarkTracker:
             tip_x=(tip[0] - w / 2.0) / (w / 2.0),
             tip_y=(tip[1] - h / 2.0) / (h / 2.0),
             index_only=index_only,
+            thumb_down=thumb_down,
         )

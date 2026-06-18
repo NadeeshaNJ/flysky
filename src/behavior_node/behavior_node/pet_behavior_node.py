@@ -34,6 +34,18 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist, PointStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
+from kobuki_ros_interfaces.msg import Sound
+
+# Map behavior cues to the Kobuki's built-in buzzer tunes.
+SOUND = {
+    'approach': Sound.ON,            # forward
+    'backup': Sound.RECHARGE,        # backward
+    'spin': Sound.CLEANINGSTART,     # rotate360
+    'left': Sound.BUTTON,            # turn left
+    'right': Sound.BUTTON,           # turn right
+    'wag': Sound.CLEANINGEND,        # tail wag (cute tune)
+    'stop': Sound.OFF,               # stop
+}
 
 HALF_PI = math.pi / 2.0
 TWO_PI = 2.0 * math.pi
@@ -82,6 +94,8 @@ class PetBehaviorNode(Node):
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.sound_pub = self.create_publisher(
             String, self.get_parameter('sound_topic').value, 10)
+        # Kobuki buzzer (built-in tunes) — plays a cue per action.
+        self.buzzer_pub = self.create_publisher(Sound, '/commands/sound', 10)
         self.create_subscription(String, '/gesture/tracking', self.on_gesture, 10)
         self.create_subscription(PointStamped, '/vision/target', self.on_face, 10)
         self.create_subscription(Odometry, '/odom', self.on_odom, 20)
@@ -251,7 +265,9 @@ class PetBehaviorNode(Node):
                 pass
 
     def cue(self, name):
-        self.sound_pub.publish(String(data=name))
+        self.sound_pub.publish(String(data=name))      # abstract cue
+        if name in SOUND:                               # Kobuki buzzer tune
+            self.buzzer_pub.publish(Sound(value=SOUND[name]))
 
     def _now(self):
         return self.get_clock().now().nanoseconds * 1e-9

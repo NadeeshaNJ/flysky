@@ -68,6 +68,15 @@ class GestureClassifier:
         while self.buf and t - self.buf[0][0] > self.window:
             self.buf.popleft()
 
+        # STOP is always responsive — it must abort a running maneuver even during
+        # the post-gesture cooldown.
+        held = self._recent(t, self.stop_hold)
+        if self._sustained(t, self.stop_hold, is_open) and \
+                self._span_motion(held) < self.deadband * 2:
+            self._locked_until = t + self.cooldown
+            self.buf.clear()
+            return 'stop'
+
         if t < self._locked_until:
             return None
 
@@ -89,11 +98,7 @@ class GestureClassifier:
         if not present:
             return None
 
-        # 1) STOP — open palm *held* (full stop_hold), low motion (top priority).
-        held = self._recent(t, self.stop_hold)
-        if self._sustained(t, self.stop_hold, is_open) and \
-                self._span_motion(held) < self.deadband * 2:
-            return 'stop'
+        # (STOP is handled in update() so it stays responsive during cooldown.)
 
         # 2) FORWARD — curl twice (>=2 open->closed transitions).
         if self._curl_count() >= 2:
@@ -118,15 +123,15 @@ class GestureClassifier:
         sp = self._present(swipe)
         if len(sp) >= 3 and sum(f.fingers >= 3 for f in sp) >= len(sp) // 2:
             _, net_s = self._reversals_and_net(swipe)
+            # Mapping swapped so the robot sidesteps to the side the user intends
+            # (the camera image is mirrored relative to the person).
             if net_s <= -self.swipe_dx:
-                return 'turn_left'
-            if net_s >= self.swipe_dx:
                 return 'turn_right'
+            if net_s >= self.swipe_dx:
+                return 'turn_left'
 
-        # 6) BACKWARD — fist *held still* for back_hold (lowest priority).
-        back = self._recent(t, self.back_hold)
-        if self._sustained(t, self.back_hold, is_closed) and \
-                self._span_motion(back) < self.deadband * 2 and self._curl_count() == 0:
+        # 6) BACKWARD — thumbs-down held.
+        if self._sustained(t, self.back_hold, lambda f: f.thumb_down):
             return 'backward'
 
         return None
