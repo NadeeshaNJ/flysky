@@ -60,24 +60,35 @@ class KinectRGBD(Node):
             return
 
         try:
-            rgb, _ = freenect.sync_get_video()      # HxWx3 uint8 (RGB)
-            depth, _ = freenect.sync_get_depth()    # HxW uint16 (mm-ish)
+            rgb_frame = freenect.sync_get_video()    # (HxWx3 uint8, ts) or None
+            depth_frame = freenect.sync_get_depth()  # (HxW uint16, ts) or None
         except Exception as exc:  # pragma: no cover - runtime device errors
             self.get_logger().warn(
                 f'Kinect read failed: {exc}', throttle_duration_sec=5.0)
             return
 
+        # sync_get_* return None when a fresh frame is not ready yet (common
+        # under USB bandwidth loss on the Pi) — skip this tick rather than crash.
+        if rgb_frame is None and depth_frame is None:
+            self.get_logger().warn('No frame ready from Kinect.',
+                                   throttle_duration_sec=10.0)
+            return
+
         stamp = self.get_clock().now().to_msg()
 
-        rgb_msg = self.bridge.cv2_to_imgmsg(rgb, encoding='rgb8')
-        rgb_msg.header.stamp = stamp
-        rgb_msg.header.frame_id = self.frame_id
-        self.rgb_pub.publish(rgb_msg)
+        if rgb_frame is not None:
+            rgb, _ = rgb_frame
+            rgb_msg = self.bridge.cv2_to_imgmsg(rgb, encoding='rgb8')
+            rgb_msg.header.stamp = stamp
+            rgb_msg.header.frame_id = self.frame_id
+            self.rgb_pub.publish(rgb_msg)
 
-        depth_msg = self.bridge.cv2_to_imgmsg(depth, encoding='16UC1')
-        depth_msg.header.stamp = stamp
-        depth_msg.header.frame_id = self.frame_id
-        self.depth_pub.publish(depth_msg)
+        if depth_frame is not None:
+            depth, _ = depth_frame
+            depth_msg = self.bridge.cv2_to_imgmsg(depth, encoding='16UC1')
+            depth_msg.header.stamp = stamp
+            depth_msg.header.frame_id = self.frame_id
+            self.depth_pub.publish(depth_msg)
 
 
 def main(args=None):
@@ -88,6 +99,13 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # Release the Kinect cleanly so the next run can claim it (the sync API
+        # otherwise keeps the USB device claimed until the process fully exits).
+        if _HAVE_FREENECT:
+            try:
+                freenect.sync_stop()
+            except Exception:
+                pass
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

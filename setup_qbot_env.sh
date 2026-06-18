@@ -28,6 +28,15 @@ export LANG=en_US.UTF-8
 sudo apt install -y software-properties-common curl gnupg lsb-release
 sudo add-apt-repository -y universe
 
+# Ensure the noble-updates pocket is enabled. Some RPi images ship with only
+# 'noble' + 'noble-security'; without -updates, security-patched runtime libs
+# outrun their matching -dev packages and ROS install fails on broken deps.
+UBUNTU_SOURCES=/etc/apt/sources.list.d/ubuntu.sources
+if [ -f "${UBUNTU_SOURCES}" ] && ! grep -qE '^Suites:.*noble-updates' "${UBUNTU_SOURCES}"; then
+  sudo cp "${UBUNTU_SOURCES}" "${UBUNTU_SOURCES}.bak"
+  sudo sed -i 's|^Suites: noble$|Suites: noble noble-updates noble-backports|' "${UBUNTU_SOURCES}"
+fi
+
 # 3. ROS 2 apt source ----------------------------------------------------------
 sudo apt update
 ROS_APT_SOURCE_VERSION="$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest \
@@ -37,7 +46,10 @@ curl -L -o /tmp/ros2-apt-source.deb \
 sudo apt install -y /tmp/ros2-apt-source.deb
 
 # 4. ROS 2 Jazzy + build/dev tools --------------------------------------------
+# full-upgrade first: ROS dev packages pin runtime libs to the patched (-updates)
+# versions, so the base system must be fully upgraded or apt reports broken deps.
 sudo apt update
+sudo apt full-upgrade -y
 sudo apt install -y \
   ros-${ROS_DISTRO}-ros-base \
   ros-dev-tools \
