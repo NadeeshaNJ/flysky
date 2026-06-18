@@ -15,6 +15,10 @@ import os
 from dataclasses import dataclass
 
 import numpy as np
+import onnxruntime as ort
+
+# onnxruntime 1.27 logs noisy GPU-discovery warnings on a headless Pi; quiet them.
+ort.set_default_logger_severity(3)  # 3 = ERROR (hide INFO/WARNING)
 
 from gesture_node.mp_models.mp_palmdet import MPPalmDet
 from gesture_node.mp_models.mp_handpose import MPHandPose
