@@ -94,8 +94,9 @@ sudo modprobe -r gspca_kinect 2>/dev/null || true
 
 # Kobuki base: FTDI FT232 USB-serial -> stable /dev/kobuki symlink + group access
 sudo tee /etc/udev/rules.d/60-kobuki.rules >/dev/null <<'RULES'
-# Kobuki / TurtleBot2 mobile base (FTDI FT232, vendor 0403 product 6001)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0666", GROUP="dialout", SYMLINK+="kobuki"
+# Kobuki mobile base (Yujin Robot "iClebo Kobuki", FTDI FT232) -> /dev/kobuki.
+# Match on the product string so we don't grab unrelated 0403:6001 FTDI adapters.
+SUBSYSTEM=="tty", ATTRS{manufacturer}=="Yujin Robot", ATTRS{product}=="iClebo Kobuki", MODE="0666", GROUP="dialout", SYMLINK+="kobuki"
 RULES
 sudo udevadm control --reload-rules && sudo udevadm trigger
 
