@@ -1,7 +1,7 @@
 pet_behavior_node:
   ros__parameters:
-    cmd_vel_topic: /cmd_vel
-    sound_topic: /commands/sound
+    cmd_vel_topic: /commands/velocity   # Kobuki base velocity input (Twist)
+    sound_topic: /qbot/sound            # neutral cue topic (avoids Kobuki's typed /commands/sound)
     target_topic: /vision/target
     gesture_topic: /gesture/tracking
     linear_speed: 0.12       # m/s  (gentle indoor speed)

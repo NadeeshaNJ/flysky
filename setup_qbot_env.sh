@@ -57,7 +57,7 @@ sudo apt install -y \
   python3-rosdep \
   build-essential cmake git
 
-# 5. ROS packages used by the QBot nodes --------------------------------------
+# 5. ROS packages used by the QBot nodes + Kobuki driver build deps -----------
 sudo apt install -y \
   ros-${ROS_DISTRO}-cv-bridge \
   ros-${ROS_DISTRO}-image-transport \
@@ -66,14 +66,26 @@ sudo apt install -y \
   ros-${ROS_DISTRO}-std-msgs \
   python3-opencv \
   python3-numpy
+# Kobuki: interfaces + velocity smoother are in apt; the node/core + most ecl are
+# built from source (step 9). These are the deps not pulled in transitively.
+sudo apt install -y \
+  ros-${ROS_DISTRO}-kobuki-ros-interfaces \
+  ros-${ROS_DISTRO}-kobuki-velocity-smoother \
+  ros-${ROS_DISTRO}-sophus \
+  ros-${ROS_DISTRO}-angles \
+  ros-${ROS_DISTRO}-diagnostic-updater \
+  ros-${ROS_DISTRO}-diagnostic-msgs \
+  ros-${ROS_DISTRO}-nav-msgs \
+  ros-${ROS_DISTRO}-tf2 \
+  ros-${ROS_DISTRO}-tf2-ros \
+  libftdi1-dev libusb-1.0-0-dev libeigen3-dev cython3 python3-setuptools
 
 # 6. rosdep --------------------------------------------------------------------
 sudo rosdep init 2>/dev/null || true
 rosdep update || true
 
 # 7. Kinect / libfreenect USB access ------------------------------------------
-sudo apt install -y libfreenect-dev freenect python3-freenect 2>/dev/null || \
-  sudo apt install -y libfreenect-dev freenect || true
+sudo apt install -y libfreenect-dev freenect   # no python3-freenect in apt (built below)
 # video,plugdev -> Kinect ; dialout -> Kobuki USB-serial
 sudo usermod -aG video,plugdev,dialout "${PROJECT_USER}"
 
@@ -100,7 +112,52 @@ SUBSYSTEM=="tty", ATTRS{manufacturer}=="Yujin Robot", ATTRS{product}=="iClebo Ko
 RULES
 sudo udevadm control --reload-rules && sudo udevadm trigger
 
-# 8. Auto-source ROS in the user's shell --------------------------------------
+# 8. Build the libfreenect Python binding (not packaged in apt) ----------------
+# kinect_camera/kinect_rgbd.py does `import freenect`. Build the Cython wrapper
+# against the system libfreenect and install it for the system python3.
+FN_SRC=/tmp/libfreenect
+rm -rf "${FN_SRC}"
+git clone --depth 1 https://github.com/OpenKinect/libfreenect "${FN_SRC}"
+pushd "${FN_SRC}/wrappers/python" >/dev/null
+python3 - <<'PYBUILD'
+from setuptools import setup, Extension
+from Cython.Build import cythonize
+import numpy as np, sys
+ext = Extension("freenect", ["freenect.pyx"],
+               libraries=["usb-1.0", "freenect", "freenect_sync"],
+               include_dirs=["/usr/include", "/usr/include/libusb-1.0", np.get_include()])
+sys.argv = ["setup.py", "build_ext", "--inplace"]
+setup(name="freenect", ext_modules=cythonize([ext], language_level="3"))
+PYBUILD
+SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+sudo cp freenect.cpython-*.so "${SITE}/"
+popd >/dev/null
+python3 -c "import freenect" && echo "freenect python binding: OK"
+
+# 9. Build the Kobuki driver stack from source --------------------------------
+# kobuki_node + kobuki_core and most of ecl are not in apt for Jazzy.
+SRC="${WS_DIR}/src"
+clone() { [ -d "${SRC}/$2" ] || git clone --depth 1 "$1" "${SRC}/$2"; }
+clone https://github.com/stonier/ecl_tools.git        ecl_tools
+clone https://github.com/stonier/ecl_lite.git         ecl_lite
+clone https://github.com/stonier/ecl_core.git         ecl_core
+clone https://github.com/kobuki-base/kobuki_core.git  kobuki_core
+clone https://github.com/kobuki-base/kobuki_ros.git   kobuki_ros
+
+# ecl ships -Werror; its older code trips newer GCC warnings on Ubuntu 24.04.
+sed -i 's|-Wall -Wextra -Werror -Wpedantic|-Wall -Wextra -Wpedantic -Wno-overloaded-virtual|' \
+  "${SRC}/ecl_tools/ecl_build/cmake/ecl_cxx.cmake" 2>/dev/null || true
+
+# Skip packages we don't need (heavy apps/tests, and keyop which needs the
+# unpackaged cmd_vel_mux at runtime).
+for p in ecl_core/ecl_core_apps ecl_core/ecl_manipulators \
+         kobuki_ros/kobuki_keyop kobuki_ros/kobuki_auto_docking \
+         kobuki_ros/kobuki_bumper2pc kobuki_ros/kobuki_controller_tutorial \
+         kobuki_ros/kobuki_random_walker kobuki_ros/kobuki_testsuite; do
+  touch "${SRC}/${p}/COLCON_IGNORE" 2>/dev/null || true
+done
+
+# 10. Auto-source ROS in the user's shell -------------------------------------
 SHELL_RC="/home/${PROJECT_USER}/.bashrc"
 if ! grep -q "source /opt/ros/${ROS_DISTRO}/setup.bash" "${SHELL_RC}" 2>/dev/null; then
   echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> "${SHELL_RC}"
@@ -109,12 +166,14 @@ fi
 cat <<EOF
 
 ==> Done.
-    1. Log out/in (or run: newgrp plugdev) so the video/plugdev groups take effect.
-    2. Build the workspace:
+    1. Log out/in (or run: newgrp plugdev) so the video/plugdev/dialout groups apply.
+    2. Build the workspace (limit parallelism on a 4 GB Pi to avoid OOM; add swap
+       first if you have none):
          source /opt/ros/${ROS_DISTRO}/setup.bash
          cd ${WS_DIR}
-         colcon build --symlink-install
+         MAKEFLAGS="-j2" colcon build --symlink-install --parallel-workers 1 \
+           --cmake-args -DCMAKE_BUILD_TYPE=Release
          source install/setup.bash
-    3. Bring it up:
+    3. Bring it up (use_base:=false to test perception without driving the robot):
          ros2 launch behavior_node qbot.launch.py
 EOF

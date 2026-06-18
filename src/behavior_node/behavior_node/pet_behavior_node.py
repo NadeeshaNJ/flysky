@@ -34,8 +34,12 @@ class PetBehaviorNode(Node):
     def __init__(self):
         super().__init__('pet_behavior_node')
 
+        # NB: the Kobuki base subscribes to /commands/velocity (Twist) and uses a
+        # *typed* /commands/sound (kobuki Sound msg). We keep our sound cue on a
+        # neutral topic to avoid a type clash; the bringup launch points
+        # cmd_vel_topic at /commands/velocity.
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('sound_topic', '/commands/sound')
+        self.declare_parameter('sound_topic', '/qbot/sound')
         self.declare_parameter('target_topic', '/vision/target')
         self.declare_parameter('gesture_topic', '/gesture/tracking')
         self.declare_parameter('linear_speed', 0.12)      # m/s
@@ -116,7 +120,12 @@ class PetBehaviorNode(Node):
         self.cmd_pub.publish(twist)
 
     def publish_stop(self):
-        self.cmd_pub.publish(Twist())
+        # Guard against publishing during/after shutdown (SIGINT teardown race).
+        if rclpy.ok():
+            try:
+                self.cmd_pub.publish(Twist())
+            except Exception:
+                pass
 
     def cue(self, name: str):
         if name != self._last_sound:

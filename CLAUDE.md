@@ -71,8 +71,21 @@ ros2 topic echo /cmd_vel
 - **Kinect**: working end-to-end. `kinect_rgbd` publishes RGB @ ~30 Hz (640×480 rgb8)
   and depth (640×480 16UC1). The `freenect` Python module was built from source
   (not in apt) and installed to `/usr/local/lib/python3.12/dist-packages/`.
-- **Kobuki**: enumerated on `/dev/ttyUSB0` (FTDI), `/dev/kobuki` symlink + `dialout`
-  group configured. ROS 2 driver wiring is the next task.
+- **Kobuki**: working. Driver connects over `/dev/kobuki` (HW 1.0.4 / FW 1.1.4),
+  publishes `/odom` + `/sensors/core`. Built from source (`kobuki_core` +
+  `kobuki_node` + full `ecl` stack) since they're not in apt for Jazzy; built into
+  `src/` and gitignored. `qbot.launch.py` now brings up the base too.
+
+### Kobuki operational notes
+- Velocity input is **`/commands/velocity`** (geometry_msgs/Twist), NOT `/cmd_vel`.
+  The behavior node's `cmd_vel_topic` is pointed there in the bringup launch.
+- Its `/commands/sound` uses a typed `kobuki Sound` msg — our behavior node emits
+  abstract cues on **`/qbot/sound`** instead to avoid a topic-type clash.
+- The `ecl` source builds with `-Werror` which fails on Ubuntu 24.04's GCC; the
+  installer patches `ecl_cxx.cmake` to drop it. `kobuki_keyop` is skipped (needs
+  the unpackaged `cmd_vel_mux`).
+- Build on the Pi with limited parallelism to avoid OOM (2 GB swap helps):
+  `MAKEFLAGS="-j2" colcon build --symlink-install --parallel-workers 1`
 
 ### Kinect operational notes / gotchas
 - The kernel `gspca_kinect` driver must stay blacklisted (done in

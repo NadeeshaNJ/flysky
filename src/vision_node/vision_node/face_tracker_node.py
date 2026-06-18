@@ -14,6 +14,8 @@ Detection uses the OpenCV Haar cascade bundled with opencv-python, so it runs
 with no extra model downloads. Swap in a DNN/landmark detector later if needed.
 """
 
+import os
+
 import cv2
 import rclpy
 from rclpy.node import Node
@@ -38,15 +40,33 @@ class FaceTrackerNode(Node):
         self.scale_factor = float(self.get_parameter('scale_factor').value)
 
         self.bridge = CvBridge()
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        self.detector = cv2.CascadeClassifier(cascade_path)
-        if self.detector.empty():
-            self.get_logger().error(f'Failed to load Haar cascade at {cascade_path}')
+        cascade_path = self._find_cascade('haarcascade_frontalface_default.xml')
+        self.detector = cv2.CascadeClassifier(cascade_path) if cascade_path else cv2.CascadeClassifier()
+        if cascade_path is None or self.detector.empty():
+            self.get_logger().error(
+                'Failed to load the frontal-face Haar cascade; face detection disabled.')
 
         self.sub = self.create_subscription(Image, rgb_topic, self.on_image, 10)
         self.pub = self.create_publisher(PointStamped, target_topic, 10)
         self.get_logger().info(
             f'face_tracker_node up: {rgb_topic} -> {target_topic}')
+
+    @staticmethod
+    def _find_cascade(name: str):
+        """Locate an OpenCV Haar cascade across packaging layouts.
+
+        Debian's python3-opencv has no ``cv2.data``; its cascades live under
+        /usr/share/opencv4/haarcascades/. pip wheels expose ``cv2.data`` instead.
+        """
+        candidates = []
+        data = getattr(cv2, 'data', None)
+        if data is not None:
+            candidates.append(os.path.join(data.haarcascades, name))
+        candidates.append(os.path.join('/usr/share/opencv4/haarcascades', name))
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
 
     def on_image(self, msg: Image):
         try:
