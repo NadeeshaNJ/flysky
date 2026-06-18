@@ -6,6 +6,9 @@ log/
 # Third-party source built into the workspace (cloned by setup, not ours to track)
 src/kobuki_core/
 src/kobuki_ros/
+src/ecl_tools/
+src/ecl_lite/
+src/ecl_core/
 
 # Python
 __pycache__/
