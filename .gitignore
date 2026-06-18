@@ -30,3 +30,7 @@ __pycache__/
 # ONNX hand models (downloaded by setup, ~8MB binaries)
 models/
 src/gesture_node/models/
+
+# Laptop-only dev tools (webcam gesture tester + its venv) — not part of the
+# colcon workspace / Pi build, do not track.
+tools/

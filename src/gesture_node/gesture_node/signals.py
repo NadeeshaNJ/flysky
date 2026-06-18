@@ -59,7 +59,13 @@ def fingers_up(lms):
 
     out = [thumb]
     for tip, pip in zip(TIPS, PIPS):
-        out.append(1 if lms[tip][1] < lms[pip][1] else 0)
+        # Orientation-independent: a finger is extended when its tip is farther
+        # from the wrist than its PIP joint. (A plain ``tip.y < pip.y`` test only
+        # works for an upright hand and misses a finger pointed sideways — which
+        # is exactly the turn-left/right pointing pose.)
+        tip_d = np.linalg.norm(lms[tip][:2] - wrist[:2])
+        pip_d = np.linalg.norm(lms[pip][:2] - wrist[:2])
+        out.append(1 if tip_d > pip_d * 1.05 else 0)
     return out
 
 

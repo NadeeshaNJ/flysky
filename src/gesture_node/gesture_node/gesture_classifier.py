@@ -11,7 +11,7 @@ Gesture vocabulary (decided with the team, 2026-06-18):
   stop        open palm held still                  -> immediate halt
   forward     "come closer": curl the hand twice    -> drive forward
               (openness open->closed->open x2)
-  backward    closed fist held still ~1s            -> drive backward
+  backward    thumbs-down held ~0.6s                -> drive backward
   rotate360   index finger drawing a circle         -> spin 360 in place
   turn_left   index finger pointed & held LEFT      -> sidestep-left maneuver
   turn_right  index finger pointed & held RIGHT     -> sidestep-right maneuver
@@ -49,10 +49,10 @@ class GestureClassifier:
                  beckon_open=0.62,
                  beckon_closed=0.32,
                  beckon_min_half=0.18,
-                 # backward (fist held)
-                 fist_closed=0.32,        # openness at/below = closed
-                 fist_release=0.50,       # openness above = no longer a fist
-                 back_hold=1.0,           # s the fist must persist
+                 # backward (thumbs-down held) — a plain fist must NOT trigger
+                 # this; only an explicit thumbs-down does (it clashed with the
+                 # 'forward' beckon, which closes the hand into fists).
+                 back_hold=0.6,           # s the thumbs-down pose must persist
                  # rotate360 (index circle)
                  rotate_window=3.2,
                  rotate_min_samples=12,
@@ -79,8 +79,6 @@ class GestureClassifier:
         self.stop_motion_tol = stop_motion_tol
         self.wave_open = wave_open
 
-        self.fist_closed = fist_closed
-        self.fist_release = fist_release
         self.back_hold = back_hold
 
         self.rotate_window = rotate_window
@@ -109,7 +107,7 @@ class GestureClassifier:
         self.palm_track = []     # (t, cx, cy)  while open
         self.point_track = []    # (t, tip_x, tip_y)  while POINTING
         self._open_since = None
-        self._fist_since = None
+        self._thumbdown_since = None
         self._point_dir = None
         self._point_since = None
         self._last_present = -1e9
@@ -122,7 +120,7 @@ class GestureClassifier:
         self.palm_track.clear()
         self.point_track.clear()
         self._open_since = None
-        self._fist_since = None
+        self._thumbdown_since = None
         self._point_dir = None
         self._point_since = None
 
@@ -170,14 +168,15 @@ class GestureClassifier:
             self.point_track.clear()
         self._prune(self.point_track, t, self.rotate_window)
 
-        # fist hold (backward) — sustained, non-oscillating closed hand. Must NOT
-        # be a pointing pose: rotate/turn both hold POINTING (and a pointing hand
-        # can read low-openness), so exclude it to avoid a false backward.
-        if openness <= self.fist_closed and label != 'POINTING':
-            if self._fist_since is None:
-                self._fist_since = t
-        elif openness > self.fist_release or label == 'POINTING':
-            self._fist_since = None
+        # thumbs-down hold (backward) — the ONLY backward cue. A plain closed fist
+        # no longer triggers backward: the 'forward' beckon closes the hand into
+        # fists, so a held fist used to clash with it. An explicit thumbs-down
+        # (four fingers curled + thumb pointing down) is unambiguous.
+        if feat.thumb_down:
+            if self._thumbdown_since is None:
+                self._thumbdown_since = t
+        else:
+            self._thumbdown_since = None
 
         # point hold (turn) — same horizontal direction held
         if label == 'POINTING' and feat.pointing in ('LEFT', 'RIGHT'):
@@ -216,7 +215,7 @@ class GestureClassifier:
             self._fire()
             return turn
 
-        if self._fist_since is not None and (t - self._fist_since) >= self.back_hold:
+        if self._thumbdown_since is not None and (t - self._thumbdown_since) >= self.back_hold:
             self._fire()
             return 'backward'
 
@@ -304,7 +303,7 @@ class GestureClassifier:
         self.palm_track.clear()
         self.point_track.clear()
         self._open_since = None
-        self._fist_since = None
+        self._thumbdown_since = None
         self._point_dir = None
         self._point_since = None
         self.labels.reset()

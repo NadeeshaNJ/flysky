@@ -109,18 +109,18 @@ class HandLandmarkTracker:
         fingers = int(sum(ups) + thumb)
         index_only = bool(ups[0] and not ups[1] and not ups[2] and not ups[3])
 
-        # Thumbs-down: the four fingers are curled and the thumb points downward
-        # (tip below its own MCP joint in image-y). Orientation-robust enough to
-        # distinguish from a plain fist (thumb tucked, not pointing down).
-        thumb_dy = lms_px[THUMB_TIP][1] - lms_px[THUMB_MCP][1]   # +ve = tip below MCP
-        thumb_down = bool(sum(ups) == 0 and thumb_dy > 18)
-
         # Richer normalised features (signals.py).
         finger_pattern = signals.fingers_up(norm)
         label = signals.label_from_finger_pattern(finger_pattern)
         openness = signals.hand_openness(norm)
         nx, ny, span = signals.hand_center_and_span(norm)
         pointing = signals.pointing_direction(norm)
+
+        # Thumbs-down: four fingers curled + thumb pointing downward. Derived from
+        # the normalised, smoothed landmarks (signals.thumbs_down) so it stays
+        # consistent with the finger pattern above. This is the *only* backward
+        # cue now — a plain fist must not move the robot backward.
+        thumb_down = signals.thumbs_down(norm, finger_pattern)
 
         palm_c = lms_px[PALM_IDS].mean(axis=0)
         tip = lms_px[INDEX_TIP]
