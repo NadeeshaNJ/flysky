@@ -94,3 +94,8 @@ The `kinect_camera` package uses the low-level libfreenect C API to open only th
 - **LED/Motor errors** (`LIBUSB_ERROR_IO`): Harmless on Windows hardware; streams still publish if firmware is present.
 - **No device found errors**: Ensure libfreenect build is complete and firmware blob exists before starting the node.
 - **Permissions denied**: Log out and back in after adding groups, or use `sudo` as a quick test.
+
+
+
+i have this new repo that i want you to setup with 2 md files that i have included. i
+will later connect you to the kinect 360 cam and the 

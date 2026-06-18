@@ -96,7 +96,7 @@ class GestureCommandNode(Node):
             self.get_logger().info(
                 f'hand: fingers={feat.fingers} index_only={feat.index_only} '
                 f'thumb_down={feat.thumb_down} cx={feat.cx:+.2f} cy={feat.cy:+.2f}',
-                throttle_duration_sec=0.3)
+                throttle_duration_sec=1.0)
 
         cmd = self.classifier.update(t, feat)
         if cmd:
