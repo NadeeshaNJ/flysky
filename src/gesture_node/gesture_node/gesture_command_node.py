@@ -19,6 +19,7 @@ import os
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from ament_index_python.packages import get_package_share_directory
 
 from sensor_msgs.msg import Image
@@ -59,17 +60,27 @@ class GestureCommandNode(Node):
         self.classifier = GestureClassifier(
             swipe_dx=float(self.get_parameter('swipe_dx').value))
 
-        self._last_proc = 0.0
-        self.sub = self.create_subscription(Image, rgb_topic, self.on_rgb, 5)
+        # Keep-last-1, best-effort: the transport holds only the freshest frame so
+        # we never build a backlog (ONNX inference is slower than the frame rate).
+        qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                         reliability=ReliabilityPolicy.BEST_EFFORT)
+        self._latest = None
+        self.sub = self.create_subscription(Image, rgb_topic, self.on_rgb, qos)
         self.pub = self.create_publisher(String, command_topic, 10)
+        # Process on a timer so we always run on the most recent frame and drop any
+        # intermediate ones, instead of working through a queue of stale frames.
+        self.timer = self.create_timer(self.min_period, self.process_latest)
         self.get_logger().info(
             f'gesture_command_node up (ONNX landmarks): {rgb_topic} -> {command_topic}')
 
     def on_rgb(self, msg: Image):
-        t = self.get_clock().now().nanoseconds * 1e-9
-        if t - self._last_proc < self.min_period:
-            return                      # rate-cap inference
-        self._last_proc = t
+        self._latest = msg              # cheap: just stash the newest frame
+
+    def process_latest(self):
+        msg = self._latest
+        if msg is None:
+            return
+        self._latest = None             # consume so each frame is handled once
 
         try:
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
