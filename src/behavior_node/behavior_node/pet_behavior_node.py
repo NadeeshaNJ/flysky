@@ -113,6 +113,7 @@ class PetBehaviorNode(Node):
 
         self.last_face = -1e9
         self.last_wiggle = 0.0
+        self._last_cue = None
 
         self.timer = self.create_timer(1.0 / hz, self.control_step)
         self.get_logger().info('pet_behavior_node up (maneuver executor)')
@@ -265,6 +266,11 @@ class PetBehaviorNode(Node):
                 pass
 
     def cue(self, name):
+        # De-dupe: don't replay the same cue/buzzer back-to-back (e.g. a held
+        # open palm re-firing 'stop' would otherwise beep continuously).
+        if name == self._last_cue:
+            return
+        self._last_cue = name
         self.sound_pub.publish(String(data=name))      # abstract cue
         if name in SOUND:                               # Kobuki buzzer tune
             self.buzzer_pub.publish(Sound(value=SOUND[name]))

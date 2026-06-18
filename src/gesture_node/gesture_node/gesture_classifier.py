@@ -41,7 +41,7 @@ class GestureClassifier:
                  stop_hold=0.3,        # s open palm must persist
                  back_hold=1.0,        # s fist must persist
                  swipe_window=0.7,     # s to measure a swipe
-                 swipe_dx=0.35,        # min net horizontal travel (normalised)
+                 swipe_dx=0.45,        # min net horizontal travel (normalised)
                  wag_window=1.0,       # s to measure a wag
                  wag_reversals=3,      # direction changes for a wag
                  rotate_window=2.0,    # s to accumulate finger circle
@@ -118,17 +118,21 @@ class GestureClassifier:
             if rev >= self.wag_reversals and abs(net) < self.swipe_dx:
                 return 'tail_wag'
 
-        # 5) TURN — directional open-hand swipe.
+        # 5) TURN — a deliberate, predominantly-horizontal open-hand swipe. Must be
+        # mostly open, travel >= swipe_dx horizontally, be far more horizontal than
+        # vertical, and not just wobble — this keeps incidental hand drift from
+        # triggering turns.
         swipe = self._recent(t, self.swipe_window)
         sp = self._present(swipe)
-        if len(sp) >= 3 and sum(f.fingers >= 3 for f in sp) >= len(sp) // 2:
-            _, net_s = self._reversals_and_net(swipe)
-            # Mapping swapped so the robot sidesteps to the side the user intends
-            # (the camera image is mirrored relative to the person).
-            if net_s <= -self.swipe_dx:
-                return 'turn_right'
-            if net_s >= self.swipe_dx:
-                return 'turn_left'
+        if len(sp) >= 4 and sum(f.fingers >= 3 for f in sp) >= len(sp) // 2:
+            xs = [f.cx for f in sp]
+            ys = [f.cy for f in sp]
+            net_x = xs[-1] - xs[0]
+            net_y = ys[-1] - ys[0]
+            rev, _ = self._reversals_and_net(swipe)
+            if abs(net_x) >= self.swipe_dx and abs(net_x) > 1.8 * abs(net_y) and rev <= 1:
+                # Mapping swapped: the camera image is mirrored relative to the user.
+                return 'turn_right' if net_x < 0 else 'turn_left'
 
         # 6) BACKWARD — thumbs-down held.
         if self._sustained(t, self.back_hold, lambda f: f.thumb_down):
