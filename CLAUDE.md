@@ -66,6 +66,25 @@ ros2 topic echo /cmd_vel
 - Tune behavior in `src/behavior_node/config/behavior.yaml`; keep indoor speeds
   gentle and preserve the input watchdog (no runaway on stale data).
 
+## Hardware status (verified 2026-06-18)
+- **ROS 2 Jazzy** installed; workspace builds clean with `colcon build --symlink-install`.
+- **Kinect**: working end-to-end. `kinect_rgbd` publishes RGB @ ~30 Hz (640×480 rgb8)
+  and depth (640×480 16UC1). The `freenect` Python module was built from source
+  (not in apt) and installed to `/usr/local/lib/python3.12/dist-packages/`.
+- **Kobuki**: enumerated on `/dev/ttyUSB0` (FTDI), `/dev/kobuki` symlink + `dialout`
+  group configured. ROS 2 driver wiring is the next task.
+
+### Kinect operational notes / gotchas
+- The kernel `gspca_kinect` driver must stay blacklisted (done in
+  `/etc/modprobe.d/blacklist-kinect.conf`) or libfreenect can't claim the camera.
+- The libfreenect **sync API leaves the USB device claimed** if a process is hard-
+  killed without `freenect.sync_stop()`. Always stop the node with Ctrl-C / SIGINT
+  (the node calls `sync_stop()` in its `finally`). Never `kill -9` it.
+- If the camera/audio drop off the bus or won't open, recover with:
+  `sudo python3 scripts/kinect_usb_reset.py`
+- The Kinect 360 needs its **external 12 V power adapter** (Y-cable) — USB bus power
+  alone runs only the motor; the camera/audio drop out without it.
+
 ## Still to do (hardware-dependent)
 - Kinect: build/verify libfreenect + firmware, confirm RGB+depth streams.
 - Kobuki: add the base driver to `qbot.launch.py`, verify `/cmd_vel` moves it.
