@@ -13,7 +13,7 @@ Command -> behavior (see gesture_classifier.py for how each gesture is detected)
     stop        immediate halt
     forward     drive forward until stopped ("come closer")
     backward    drive backward until stopped
-    rotate360   spin a full 360 in place (odom-closed-loop)
+    rotate360   spin a full 360 in place (odom-closed-loop), chirping throughout
     turn_left   sidestep left:  turn +90, drive forward, turn -90 (face signaler)
     turn_right  sidestep right: turn -90, drive forward, turn +90
     tail_wag    oscillate left-right 3 times rapidly
@@ -79,6 +79,7 @@ class PetBehaviorNode(Node):
         self.declare_parameter('face_memory', 5.0)         # s a face is "still around"
         self.declare_parameter('idle_wiggle_period', 10.0) # s between idle wiggles
         self.declare_parameter('yaw_tol', 0.05)            # rad completion tolerance
+        self.declare_parameter('spin_sound_period', 0.6)   # s between cute chirps while spinning
 
         self.linear_speed = float(self.get_parameter('linear_speed').value)
         self.turn_speed = float(self.get_parameter('turn_speed').value)
@@ -88,6 +89,7 @@ class PetBehaviorNode(Node):
         self.face_memory = float(self.get_parameter('face_memory').value)
         self.idle_wiggle_period = float(self.get_parameter('idle_wiggle_period').value)
         self.yaw_tol = float(self.get_parameter('yaw_tol').value)
+        self.spin_sound_period = float(self.get_parameter('spin_sound_period').value)
         hz = float(self.get_parameter('control_hz').value)
 
         self.cmd_pub = self.create_publisher(
@@ -110,6 +112,12 @@ class PetBehaviorNode(Node):
         self.cont_deadline = 0.0
         self.steps = deque()          # queue of step dicts
         self.step = None              # active step (with live progress fields)
+
+        # Repeating buzzer cue for the duration of a maneuver (the Kobuki only has
+        # short built-in tunes, so a "sound throughout" is a re-chirp on a timer).
+        self._loop_sound = None       # Sound.* value to repeat, or None
+        self._loop_period = 0.0
+        self._loop_next = 0.0
 
         self.last_face = -1e9
         self.last_wiggle = 0.0
@@ -144,7 +152,9 @@ class PetBehaviorNode(Node):
         elif cmd == 'backward':
             self._start_continuous(-self.linear_speed, 'backup')
         elif cmd == 'rotate360':
-            self._start_maneuver([self._rot(TWO_PI, self.turn_speed)], 'spin')
+            # Chirp a cute beep repeatedly for the whole spin (not just once).
+            self._start_maneuver([self._rot(TWO_PI, self.turn_speed)], 'spin',
+                                 loop_sound=Sound.ON, loop_period=self.spin_sound_period)
         elif cmd == 'turn_left':
             self._sidestep(+1)
         elif cmd == 'turn_right':
@@ -183,13 +193,17 @@ class PetBehaviorNode(Node):
         self.cont_deadline = self._now() + self.drive_timeout
         self.cue(cue)
 
-    def _start_maneuver(self, steps, cue):
+    def _start_maneuver(self, steps, cue, loop_sound=None, loop_period=0.0):
         if self.yaw is None:
             self.get_logger().warn('no /odom yet — cannot run maneuver', throttle_duration_sec=5.0)
             return
         self.mode = 'maneuver'
         self.steps = deque(steps)
         self.step = None
+        # Optional repeating buzzer for the duration (e.g. rotate360 chirps).
+        self._loop_sound = loop_sound
+        self._loop_period = loop_period
+        self._loop_next = self._now() + loop_period   # first chirp after the start cue
         self.cue(cue)
 
     def _go_idle(self, cue=None):
@@ -197,6 +211,7 @@ class PetBehaviorNode(Node):
         self.steps.clear()
         self.step = None
         self.cont_vx = 0.0
+        self._loop_sound = None       # stop any repeating chirp
         self.publish_stop()
         if cue:
             self.cue(cue)
@@ -211,6 +226,7 @@ class PetBehaviorNode(Node):
             return
 
         if self.mode == 'maneuver':
+            self._service_loop_sound()
             self._run_maneuver()
             return
 
@@ -250,6 +266,16 @@ class PetBehaviorNode(Node):
             s['_last'] = self.yaw
         elif s['type'] == 'drive':
             s['_sx'], s['_sy'] = self.px, self.py
+
+    def _service_loop_sound(self):
+        # Re-fire the maneuver's buzzer tune on its period so the sound carries
+        # through the whole action (the Kobuki tunes are short one-shots).
+        if self._loop_sound is None:
+            return
+        now = self._now()
+        if now >= self._loop_next:
+            self.buzzer_pub.publish(Sound(value=self._loop_sound))
+            self._loop_next = now + self._loop_period
 
     # ---- low-level ------------------------------------------------------
     def _pub(self, vx, wz):

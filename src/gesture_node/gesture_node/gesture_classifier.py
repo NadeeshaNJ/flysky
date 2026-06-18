@@ -15,7 +15,7 @@ Gesture vocabulary (decided with the team, 2026-06-18):
   rotate360   index finger drawing a circle         -> spin 360 in place
   turn_left   index finger pointed & held LEFT      -> sidestep-left maneuver
   turn_right  index finger pointed & held RIGHT     -> sidestep-right maneuver
-  tail_wag    open-hand side-to-side wave (>=3 rev) -> wag 3x
+  tail_wag    open-hand side-to-side wave (>=2 rev) -> wag 3x
 
 All thresholds are exposed for on-hand calibration; the node logs features at
 debug level. Coordinates here are the normalised [0, 1] image space carried on
@@ -66,10 +66,10 @@ class GestureClassifier:
                  mirror_horizontal=True,  # camera image is mirrored vs the user
                  # tail_wag (open-hand wave)
                  wag_window=2.4,
-                 wag_min_samples=8,
+                 wag_min_samples=6,
                  wag_amp=0.08,
                  wag_sweep=0.18,
-                 wag_reversals=3):
+                 wag_reversals=2):
         self.cooldown = cooldown
         self.span_min = span_min
         self.absence_grace = absence_grace
