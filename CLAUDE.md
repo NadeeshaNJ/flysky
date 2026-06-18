@@ -99,29 +99,41 @@ ros2 topic echo /cmd_vel
   alone runs only the motor; the camera/audio drop out without it.
 
 ## Gesture control (implemented)
-MediaPipe has no ARM64 wheels, so gestures are recognised from the Kinect **depth**
-image: the raised hand is the nearest blob (`gesture_node/hand_tracker.py`), and a
-temporal state machine (`gesture_node/gesture_classifier.py`) turns shape + motion
-into command events. The behavior node (`pet_behavior_node`) runs each as a
-closed-loop maneuver off `/odom`.
+MediaPipe has no ARM64 wheel, but **onnxruntime does**. Gestures are recognised
+from the Kinect **RGB** feed with OpenCV model-zoo's converted MediaPipe models
+(palm detection + 21 hand landmarks), vendored in `gesture_node/mp_models/` and
+run under onnxruntime (`gesture_node/hand_tracker.py`). A temporal state machine
+(`gesture_node/gesture_classifier.py`) turns finger states + motion into command
+events; the behavior node (`pet_behavior_node`) runs each as a closed-loop
+maneuver off `/odom`.
+
+> An earlier depth-silhouette approach was tried and abandoned: at arm's length
+> the Kinect depth blob couldn't separate an open palm from a fist (solidity
+> ~0.80 vs ~0.91). The ONNX landmark model gives ~100% detection at 0.98+
+> confidence and reliable per-finger states. Models live in `models/` /
+> `src/gesture_node/models/` (git-ignored, downloaded by `setup_qbot_env.sh`);
+> `onnxruntime` is a pip dependency (not apt/rosdep).
 
 | Gesture | Command | Robot behavior |
 |---|---|---|
 | Open palm, held | `stop` | Halt immediately (interrupts anything) |
 | Curl the hand twice (open↔fist ×2) | `forward` | Drive forward until stopped |
 | Closed fist, held ~1 s | `backward` | Drive backward until stopped |
-| One finger drawing a circle | `rotate360` | Spin a full 360° in place |
+| Index finger drawing a circle in the air | `rotate360` | Spin a full 360° in place |
 | Open-hand swipe to image-left | `turn_left` | Sidestep left: turn +90°, advance, turn back to face you |
 | Open-hand swipe to image-right | `turn_right` | Sidestep right (mirror) |
-| Rapid side-to-side wave (≥3 reversals) | `tail_wag` | Oscillate left-right 3× |
+| Rapid open-hand wave side-to-side | `tail_wag` | Oscillate left-right 3× |
 | (idle, face seen) | — | Wiggle every ~10 s |
 
-- Verified in closed-loop **simulation** (rotate360 ≈ 360°, sidesteps net ±0.30 m
-  with original heading, forward/stop, idle wiggle). **Gesture detection thresholds
-  still need on-hand calibration** — run the gesture node with `-p debug:=true` to
-  log per-frame `fingers/solidity/cx`, and tune `near_band`, `swipe_dx`,
-  `invert_depth`, etc. The detector assumes the hand is the closest thing to the
-  Kinect.
+- **All 7 verified live** with a real hand (calibration session 2026-06-18), and
+  maneuvers verified in closed-loop sim (rotate360 ≈ 360°, sidesteps net ±0.30 m
+  at original heading, forward/stop, idle wiggle).
+- Notes from calibration: a wrapped thumb often miscounts as one finger, so a
+  fist reads `fingers==1` — `is_closed` accepts ≤1 finger when *not* pointing
+  (`index_only`). The rotate circle is detected from the fingertip's absolute
+  path (works whether the finger pivots or the whole hand moves).
+- Run the gesture node with `-p debug:=true` to log `fingers/index_only/cx`.
+  Tune `swipe_dx`, `process_hz`, and the classifier thresholds as needed.
 - Continuous drive (`forward`/`backward`) has a `drive_timeout` safety cap so a
   missed `stop` can't run away.
 

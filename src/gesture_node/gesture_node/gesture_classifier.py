@@ -20,6 +20,20 @@ import math
 from collections import deque
 
 
+def is_open(f):
+    """Open palm: 4+ extended fingers (reliable from ONNX landmarks)."""
+    return f.present and f.fingers >= 4
+
+
+def is_closed(f):
+    """Closed fist: at most one extended finger and not a pointing pose.
+
+    Landmark finger-counting often miscounts a wrapped thumb as extended, so a
+    real fist reads fingers==1; we accept that as long as it isn't the index
+    finger (pointing), which is reserved for the rotate gesture."""
+    return f.present and f.fingers <= 1 and not f.index_only
+
+
 class GestureClassifier:
     def __init__(self,
                  window=2.5,           # s of history kept
@@ -77,7 +91,7 @@ class GestureClassifier:
 
         # 1) STOP — open palm *held* (full stop_hold), low motion (top priority).
         held = self._recent(t, self.stop_hold)
-        if self._sustained(t, self.stop_hold, lambda f: f.fingers >= 4) and \
+        if self._sustained(t, self.stop_hold, is_open) and \
                 self._span_motion(held) < self.deadband * 2:
             return 'stop'
 
@@ -89,11 +103,15 @@ class GestureClassifier:
         if self._finger_circle(t) >= self.rotate_angle:
             return 'rotate360'
 
-        # 4) TAIL_WAG — rapid side-to-side (many reversals, small net).
+        # 4) TAIL_WAG — rapid side-to-side wave with an OPEN hand (many reversals,
+        # small net). Requiring an open hand keeps pointing-circles (rotate) and
+        # fists out of this branch.
         wag = self._recent(t, self.wag_window)
-        rev, net = self._reversals_and_net(wag)
-        if rev >= self.wag_reversals and abs(net) < self.swipe_dx:
-            return 'tail_wag'
+        wp = self._present(wag)
+        if len(wp) >= 3 and sum(f.fingers >= 3 for f in wp) >= len(wp) // 2:
+            rev, net = self._reversals_and_net(wag)
+            if rev >= self.wag_reversals and abs(net) < self.swipe_dx:
+                return 'tail_wag'
 
         # 5) TURN — directional open-hand swipe.
         swipe = self._recent(t, self.swipe_window)
@@ -107,8 +125,7 @@ class GestureClassifier:
 
         # 6) BACKWARD — fist *held still* for back_hold (lowest priority).
         back = self._recent(t, self.back_hold)
-        if self._sustained(t, self.back_hold,
-                           lambda f: f.fingers <= 1 and f.solidity >= 0.80) and \
+        if self._sustained(t, self.back_hold, is_closed) and \
                 self._span_motion(back) < self.deadband * 2 and self._curl_count() == 0:
             return 'backward'
 
@@ -129,9 +146,9 @@ class GestureClassifier:
         for _, f in self.buf:
             if not f.present:
                 continue
-            if f.fingers >= 4:
+            if is_open(f):
                 states.append('open')
-            elif f.fingers <= 1:
+            elif is_closed(f):
                 states.append('closed')
         transitions = 0
         for a, b in zip(states, states[1:]):
@@ -163,13 +180,20 @@ class GestureClassifier:
         return reversals, xs[-1] - xs[0]
 
     def _finger_circle(self, t):
+        # Detect drawing a circle in the air: accumulate the angle of the index
+        # fingertip about the *centre of its own trajectory*, so it works whether
+        # the finger pivots or the whole hand moves in a circle.
         items = self._recent(t, self.rotate_window)
-        angs = []
-        for _, f in items:
-            if f.present and f.fingers == 1:
-                angs.append(math.atan2(f.tip_y - f.cy, f.tip_x - f.cx))
-        if len(angs) < 5:
+        pts = [(f.tip_x, f.tip_y) for _, f in items if f.present and f.index_only]
+        if len(pts) < 6:
             return 0.0
+        cxm = sum(p[0] for p in pts) / len(pts)
+        cym = sum(p[1] for p in pts) / len(pts)
+        # require a real radius, not jitter around a still fingertip
+        radius = max(math.hypot(px - cxm, py - cym) for px, py in pts)
+        if radius < 0.08:
+            return 0.0
+        angs = [math.atan2(py - cym, px - cxm) for px, py in pts]
         total = 0.0
         for a, b in zip(angs, angs[1:]):
             d = b - a

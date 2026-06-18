@@ -78,7 +78,7 @@ sudo apt install -y \
   ros-${ROS_DISTRO}-nav-msgs \
   ros-${ROS_DISTRO}-tf2 \
   ros-${ROS_DISTRO}-tf2-ros \
-  libftdi1-dev libusb-1.0-0-dev libeigen3-dev cython3 python3-setuptools
+  libftdi1-dev libusb-1.0-0-dev libeigen3-dev cython3 python3-setuptools python3-pip
 
 # 6. rosdep --------------------------------------------------------------------
 sudo rosdep init 2>/dev/null || true
@@ -157,7 +157,20 @@ for p in ecl_core/ecl_core_apps ecl_core/ecl_manipulators \
   touch "${SRC}/${p}/COLCON_IGNORE" 2>/dev/null || true
 done
 
-# 10. Auto-source ROS in the user's shell -------------------------------------
+# 10. Gesture recognition: onnxruntime + ONNX hand-landmark models ------------
+# MediaPipe has no ARM64 wheel; onnxruntime does. We run OpenCV model-zoo's
+# converted MediaPipe palm-detection + hand-landmark models under onnxruntime.
+python3 -m pip install --break-system-packages onnxruntime
+MODELS_DIR="${SRC}/gesture_node/models"
+mkdir -p "${MODELS_DIR}"
+curl -sL -o "${MODELS_DIR}/palm_detection_mediapipe_2023feb.onnx" \
+  "https://huggingface.co/opencv/palm_detection_mediapipe/resolve/main/palm_detection_mediapipe_2023feb.onnx"
+curl -sL -o "${MODELS_DIR}/handpose_estimation_mediapipe_2023feb.onnx" \
+  "https://huggingface.co/opencv/handpose_estimation_mediapipe/resolve/main/handpose_estimation_mediapipe_2023feb.onnx"
+python3 -c "import onnxruntime; print('onnxruntime', onnxruntime.__version__, 'OK')"
+ls -la "${MODELS_DIR}"
+
+# 11. Auto-source ROS in the user's shell -------------------------------------
 SHELL_RC="/home/${PROJECT_USER}/.bashrc"
 if ! grep -q "source /opt/ros/${ROS_DISTRO}/setup.bash" "${SHELL_RC}" 2>/dev/null; then
   echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> "${SHELL_RC}"

@@ -43,7 +43,10 @@ packages and udev rules). It is safe to re-run. It performs:
 7. Clones + patches the **Kobuki driver stack** source (`kobuki_core`,
    `kobuki_ros`, and the full `ecl` library — none are in apt for Jazzy) into
    `src/`. The `ecl` `-Werror` is patched out (it fails on Ubuntu 24.04's GCC).
-8. Auto-sources ROS in your `~/.bashrc`.
+8. **Gesture recognition**: installs `onnxruntime` (pip) and downloads the ONNX
+   hand-landmark models (palm detection + 21 landmarks) into
+   `src/gesture_node/models/`. MediaPipe has no ARM64 wheel; onnxruntime does.
+9. Auto-sources ROS in your `~/.bashrc`.
 
 After it finishes, **log out and back in** (or `newgrp plugdev`) so the new group
 membership takes effect.
@@ -119,7 +122,8 @@ ros2 run gesture_node gesture_command_node --ros-args -p debug:=true
 | `colcon build` killed / OOM | Add swap (see §3) and use `--parallel-workers 1 MAKEFLAGS="-j2"` |
 | apt "held broken packages" installing ROS | Enable `noble-updates` (the installer does this) and `sudo apt update` |
 | Kobuki: `no device port` | Use the launch file (`kobuki_node-launch.py`), not the bare executable; check `/dev/kobuki` exists |
-| Gestures not recognised | Calibrate: `-p debug:=true`, raise hand as the **closest** object to the camera, tune `near_band` / `swipe_dx` / `invert_depth` |
+| Gestures not recognised | Check the ONNX models exist in `src/gesture_node/models/` and `onnxruntime` imports; run the node with `-p debug:=true` to watch `fingers/index_only/cx`; hold your hand ~50 cm from the camera; tune `swipe_dx` / `process_hz` |
+| `ModuleNotFoundError: onnxruntime` | `python3 -m pip install --break-system-packages onnxruntime` |
 
 ---
 

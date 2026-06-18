@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""gesture_command_node — recognises hand gestures from the Kinect depth feed.
+"""gesture_command_node — recognises hand gestures from the Kinect RGB feed.
 
-Subscribes:  /kinect/depth/image_raw  (sensor_msgs/Image, 16UC1)
-Publishes:   /gesture/tracking         (std_msgs/String) — command events
+Subscribes:  /kinect/rgb/image_raw  (sensor_msgs/Image)
+Publishes:   /gesture/tracking       (std_msgs/String) — command events
 
-Pipeline: depth -> nearest-blob hand segmentation (hand_tracker) -> temporal
-gesture classification (gesture_classifier) -> command event. Commands are
-edge-triggered (published once when recognised, with a cooldown); the behavior
-node holds the resulting state. See gesture_classifier.py for the vocabulary.
+Pipeline: RGB -> ONNX palm detection + 21 hand landmarks (hand_tracker) ->
+temporal gesture classification (gesture_classifier) -> command event. Commands
+are edge-triggered (published once when recognised, with a cooldown); the
+behavior node holds the resulting state. See gesture_classifier.py for the
+vocabulary.
 
-MediaPipe isn't available on ARM64, so this is a classical-CV pipeline driven by
-the Kinect's depth image. Thresholds (declared as ROS params) need on-hand
-calibration; set the ``debug`` param to log per-frame features.
+MediaPipe has no ARM64 wheel, so the landmark models run under onnxruntime (see
+mp_models/ and models/). Set the ``debug`` param to log per-frame finger state.
+The two models cost ~60-80 ms/frame on the Pi, so we process at a capped rate.
 """
+
+import os
 
 import rclpy
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 
-from gesture_node.hand_tracker import analyse
+from gesture_node.hand_tracker import HandLandmarkTracker
 from gesture_node.gesture_classifier import GestureClassifier
 
 
@@ -29,47 +33,59 @@ class GestureCommandNode(Node):
     def __init__(self):
         super().__init__('gesture_command_node')
 
-        self.declare_parameter('depth_topic', '/kinect/depth/image_raw')
+        default_models = os.path.join(
+            get_package_share_directory('gesture_node'), 'models')
+
+        self.declare_parameter('rgb_topic', '/kinect/rgb/image_raw')
         self.declare_parameter('command_topic', '/gesture/tracking')
-        self.declare_parameter('near_band', 60)         # depth slab width (raw units)
-        self.declare_parameter('min_area_frac', 0.01)   # min hand size (image frac)
-        self.declare_parameter('invert_depth', False)   # True if higher = closer
-        self.declare_parameter('swipe_dx', 0.5)         # swipe sensitivity
+        self.declare_parameter('model_dir', default_models)
+        self.declare_parameter('score_threshold', 0.5)
+        self.declare_parameter('conf_threshold', 0.6)
+        self.declare_parameter('process_hz', 12.0)   # cap inference rate
+        self.declare_parameter('swipe_dx', 0.5)
         self.declare_parameter('debug', False)
 
-        self.depth_topic = self.get_parameter('depth_topic').value
+        rgb_topic = self.get_parameter('rgb_topic').value
         command_topic = self.get_parameter('command_topic').value
-        self.near_band = int(self.get_parameter('near_band').value)
-        self.min_area_frac = float(self.get_parameter('min_area_frac').value)
-        self.invert_depth = bool(self.get_parameter('invert_depth').value)
+        model_dir = self.get_parameter('model_dir').value
+        self.min_period = 1.0 / float(self.get_parameter('process_hz').value)
         self.debug = bool(self.get_parameter('debug').value)
 
         self.bridge = CvBridge()
-        self.classifier = GestureClassifier(swipe_dx=float(self.get_parameter('swipe_dx').value))
+        self.tracker = HandLandmarkTracker(
+            model_dir,
+            score_threshold=float(self.get_parameter('score_threshold').value),
+            conf_threshold=float(self.get_parameter('conf_threshold').value))
+        self.classifier = GestureClassifier(
+            swipe_dx=float(self.get_parameter('swipe_dx').value))
 
-        self.sub = self.create_subscription(Image, self.depth_topic, self.on_depth, 10)
+        self._last_proc = 0.0
+        self.sub = self.create_subscription(Image, rgb_topic, self.on_rgb, 5)
         self.pub = self.create_publisher(String, command_topic, 10)
         self.get_logger().info(
-            f'gesture_command_node up (depth): {self.depth_topic} -> {command_topic}')
+            f'gesture_command_node up (ONNX landmarks): {rgb_topic} -> {command_topic}')
 
-    def on_depth(self, msg: Image):
+    def on_rgb(self, msg: Image):
+        t = self.get_clock().now().nanoseconds * 1e-9
+        if t - self._last_proc < self.min_period:
+            return                      # rate-cap inference
+        self._last_proc = t
+
         try:
-            depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
+            bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as exc:
-            self.get_logger().warn(f'depth convert failed: {exc}',
+            self.get_logger().warn(f'rgb convert failed: {exc}',
                                    throttle_duration_sec=5.0)
             return
 
-        feat = analyse(depth, near_band=self.near_band,
-                       min_area_frac=self.min_area_frac, invert=self.invert_depth)
+        feat = self.tracker.process(bgr)
 
         if self.debug and feat.present:
             self.get_logger().info(
-                f'hand: fingers={feat.fingers} solidity={feat.solidity:.2f} '
-                f'cx={feat.cx:+.2f} area={feat.area_frac:.3f}',
+                f'hand: fingers={feat.fingers} index_only={feat.index_only} '
+                f'cx={feat.cx:+.2f} cy={feat.cy:+.2f}',
                 throttle_duration_sec=0.3)
 
-        t = self.get_clock().now().nanoseconds * 1e-9
         cmd = self.classifier.update(t, feat)
         if cmd:
             self.get_logger().info(f'gesture recognised -> {cmd}')

@@ -14,6 +14,8 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        # ONNX hand-landmark models (downloaded by setup_qbot_env.sh)
+        (os.path.join('share', package_name, 'models'), glob('models/*.onnx')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

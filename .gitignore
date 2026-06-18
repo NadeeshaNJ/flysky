@@ -26,3 +26,7 @@ __pycache__/
 .idea/
 *.swp
 .DS_Store
+
+# ONNX hand models (downloaded by setup, ~8MB binaries)
+models/
+src/gesture_node/models/
