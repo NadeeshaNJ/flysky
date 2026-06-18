@@ -33,6 +33,7 @@ def _kobuki_params():
 def generate_launch_description():
     use_kinect = LaunchConfiguration('use_kinect')
     use_base = LaunchConfiguration('use_base')
+    use_face = LaunchConfiguration('use_face')
     linear_speed = LaunchConfiguration('linear_speed')
     turn_speed = LaunchConfiguration('turn_speed')
 
@@ -41,6 +42,9 @@ def generate_launch_description():
                               description='Start the Kinect RGB-D driver node.'),
         DeclareLaunchArgument('use_base', default_value='true',
                               description='Start the Kobuki base driver.'),
+        DeclareLaunchArgument('use_face', default_value='false',
+                              description='Start the face tracker (off: nothing '
+                                          'consumes it yet, and it costs CPU/frame rate).'),
         DeclareLaunchArgument('linear_speed', default_value='0.12',
                               description='Drive speed m/s (lower = gentler).'),
         DeclareLaunchArgument('turn_speed', default_value='1.0',
@@ -64,6 +68,7 @@ def generate_launch_description():
         Node(
             package='vision_node', executable='face_tracker_node',
             name='face_tracker_node', output='screen',
+            condition=IfCondition(use_face),
         ),
         Node(
             package='gesture_node', executable='gesture_command_node',
