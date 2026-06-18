@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-"""gesture_command_node — classifies hand gestures into robot command strings.
+"""gesture_command_node — recognises hand gestures from the Kinect depth feed.
 
-Subscribes:  /kinect/rgb/image_raw  (sensor_msgs/Image)
-Publishes:   /gesture/tracking       (std_msgs/String)
+Subscribes:  /kinect/depth/image_raw  (sensor_msgs/Image, 16UC1)
+Publishes:   /gesture/tracking         (std_msgs/String) — command events
 
-Recognised command vocabulary (see QBOT_OVERVIEW.md):
-    "beckon"        -> come closer / move forward
-    "palm"          -> stop / hold position
-    "circle"        -> rotate in place
-    "wave_left"     -> step left
-    "wave_right"    -> step right
-    "wag"           -> oscillate left-right (tail wag)
-    "none"          -> no gesture
+Pipeline: depth -> nearest-blob hand segmentation (hand_tracker) -> temporal
+gesture classification (gesture_classifier) -> command event. Commands are
+edge-triggered (published once when recognised, with a cooldown); the behavior
+node holds the resulting state. See gesture_classifier.py for the vocabulary.
 
-This is a SCAFFOLD: the real classifier (OpenCV contour / landmark analysis, or a
-lightweight hand-landmark model) is filled in once the Kinect is connected. For
-now it loads frames, runs a placeholder, and publishes "none" so the graph wires
-up end-to-end and the behavior node can be tested with replayed commands.
+MediaPipe isn't available on ARM64, so this is a classical-CV pipeline driven by
+the Kinect's depth image. Thresholds (declared as ROS params) need on-hand
+calibration; set the ``debug`` param to log per-frame features.
 """
 
 import rclpy
@@ -26,48 +21,59 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 
-GESTURES = ('beckon', 'palm', 'circle', 'wave_left', 'wave_right', 'wag', 'none')
+from gesture_node.hand_tracker import analyse
+from gesture_node.gesture_classifier import GestureClassifier
 
 
 class GestureCommandNode(Node):
     def __init__(self):
         super().__init__('gesture_command_node')
 
-        self.declare_parameter('rgb_topic', '/kinect/rgb/image_raw')
+        self.declare_parameter('depth_topic', '/kinect/depth/image_raw')
         self.declare_parameter('command_topic', '/gesture/tracking')
+        self.declare_parameter('near_band', 60)         # depth slab width (raw units)
+        self.declare_parameter('min_area_frac', 0.01)   # min hand size (image frac)
+        self.declare_parameter('invert_depth', False)   # True if higher = closer
+        self.declare_parameter('swipe_dx', 0.5)         # swipe sensitivity
+        self.declare_parameter('debug', False)
 
-        rgb_topic = self.get_parameter('rgb_topic').value
+        self.depth_topic = self.get_parameter('depth_topic').value
         command_topic = self.get_parameter('command_topic').value
+        self.near_band = int(self.get_parameter('near_band').value)
+        self.min_area_frac = float(self.get_parameter('min_area_frac').value)
+        self.invert_depth = bool(self.get_parameter('invert_depth').value)
+        self.debug = bool(self.get_parameter('debug').value)
 
         self.bridge = CvBridge()
-        self.last_command = 'none'
+        self.classifier = GestureClassifier(swipe_dx=float(self.get_parameter('swipe_dx').value))
 
-        self.sub = self.create_subscription(Image, rgb_topic, self.on_image, 10)
+        self.sub = self.create_subscription(Image, self.depth_topic, self.on_depth, 10)
         self.pub = self.create_publisher(String, command_topic, 10)
         self.get_logger().info(
-            f'gesture_command_node up: {rgb_topic} -> {command_topic}')
+            f'gesture_command_node up (depth): {self.depth_topic} -> {command_topic}')
 
-    def on_image(self, msg: Image):
+    def on_depth(self, msg: Image):
         try:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
         except Exception as exc:
-            self.get_logger().warn(f'cv_bridge convert failed: {exc}',
+            self.get_logger().warn(f'depth convert failed: {exc}',
                                    throttle_duration_sec=5.0)
             return
 
-        command = self.classify(frame)
-        if command != self.last_command:
-            self.get_logger().info(f'gesture -> {command}')
-            self.last_command = command
-        self.pub.publish(String(data=command))
+        feat = analyse(depth, near_band=self.near_band,
+                       min_area_frac=self.min_area_frac, invert=self.invert_depth)
 
-    def classify(self, frame) -> str:
-        """Placeholder gesture classifier. Returns one of GESTURES.
+        if self.debug and feat.present:
+            self.get_logger().info(
+                f'hand: fingers={feat.fingers} solidity={feat.solidity:.2f} '
+                f'cx={feat.cx:+.2f} area={feat.area_frac:.3f}',
+                throttle_duration_sec=0.3)
 
-        TODO: implement once the Kinect is attached — segment the hand (skin /
-        depth mask), extract contour features, and map to a gesture in GESTURES.
-        """
-        return 'none'
+        t = self.get_clock().now().nanoseconds * 1e-9
+        cmd = self.classifier.update(t, feat)
+        if cmd:
+            self.get_logger().info(f'gesture recognised -> {cmd}')
+            self.pub.publish(String(data=cmd))
 
 
 def main(args=None):

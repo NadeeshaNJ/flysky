@@ -98,9 +98,34 @@ ros2 topic echo /cmd_vel
 - The Kinect 360 needs its **external 12 V power adapter** (Y-cable) — USB bus power
   alone runs only the motor; the camera/audio drop out without it.
 
-## Still to do (hardware-dependent)
-- Kinect: build/verify libfreenect + firmware, confirm RGB+depth streams.
-- Kobuki: add the base driver to `qbot.launch.py`, verify `/cmd_vel` moves it.
-- Gesture classifier: implement real detection in `gesture_command_node`.
+## Gesture control (implemented)
+MediaPipe has no ARM64 wheels, so gestures are recognised from the Kinect **depth**
+image: the raised hand is the nearest blob (`gesture_node/hand_tracker.py`), and a
+temporal state machine (`gesture_node/gesture_classifier.py`) turns shape + motion
+into command events. The behavior node (`pet_behavior_node`) runs each as a
+closed-loop maneuver off `/odom`.
+
+| Gesture | Command | Robot behavior |
+|---|---|---|
+| Open palm, held | `stop` | Halt immediately (interrupts anything) |
+| Curl the hand twice (open↔fist ×2) | `forward` | Drive forward until stopped |
+| Closed fist, held ~1 s | `backward` | Drive backward until stopped |
+| One finger drawing a circle | `rotate360` | Spin a full 360° in place |
+| Open-hand swipe to image-left | `turn_left` | Sidestep left: turn +90°, advance, turn back to face you |
+| Open-hand swipe to image-right | `turn_right` | Sidestep right (mirror) |
+| Rapid side-to-side wave (≥3 reversals) | `tail_wag` | Oscillate left-right 3× |
+| (idle, face seen) | — | Wiggle every ~10 s |
+
+- Verified in closed-loop **simulation** (rotate360 ≈ 360°, sidesteps net ±0.30 m
+  with original heading, forward/stop, idle wiggle). **Gesture detection thresholds
+  still need on-hand calibration** — run the gesture node with `-p debug:=true` to
+  log per-frame `fingers/solidity/cx`, and tune `near_band`, `swipe_dx`,
+  `invert_depth`, etc. The detector assumes the hand is the closest thing to the
+  Kinect.
+- Continuous drive (`forward`/`backward`) has a `drive_timeout` safety cap so a
+  missed `stop` can't run away.
+
+## Still to do
 - Owner recognition: add to `face_tracker_node` (currently largest-face tracking).
 - Depth-aware collision avoidance in `pet_behavior_node`.
+- On-hand gesture-threshold calibration (see above).
