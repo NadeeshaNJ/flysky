@@ -1,0 +1,142 @@
+# QBot — Command Reference
+
+A cheat-sheet of the commands used to build, run, test, and operate QBot.
+See [`INSTALL.md`](INSTALL.md) for first-time setup and [`CLAUDE.md`](CLAUDE.md)
+for architecture + the gesture vocabulary.
+
+> Almost every session starts by sourcing ROS and the workspace:
+> ```bash
+> source /opt/ros/jazzy/setup.bash
+> source ~/flysky/install/setup.bash
+> ```
+
+---
+
+## Build
+
+```bash
+cd ~/flysky
+# Full build (limit parallelism on the 4 GB Pi to avoid OOM)
+MAKEFLAGS="-j2" colcon build --symlink-install --parallel-workers 1 \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# Rebuild just one package (fast)
+colcon build --symlink-install --packages-select gesture_node
+colcon build --symlink-install --packages-select behavior_node
+```
+
+> With `--symlink-install`, edits to Python files take effect on the next node
+> start — no rebuild needed. Rebuild is only needed for new files, package.xml,
+> setup.py, or C++ changes.
+
+---
+
+## Run the full system
+
+```bash
+# Everything: Kobuki base + Kinect + face tracker + gesture + behavior
+ros2 launch behavior_node qbot.launch.py
+
+# Perception only, robot does NOT move (safe for gesture testing)
+ros2 launch behavior_node qbot.launch.py use_base:=false
+
+# No camera (e.g. replaying a bag)
+ros2 launch behavior_node qbot.launch.py use_kinect:=false
+
+# Gentle speeds for a first/supervised run
+ros2 launch behavior_node qbot.launch.py
+# ...or run the behavior node alone with overrides:
+ros2 run behavior_node pet_behavior_node --ros-args \
+  -p cmd_vel_topic:=/commands/velocity -p linear_speed:=0.08 -p turn_speed:=0.6
+```
+
+## Run individual nodes
+
+```bash
+ros2 run kinect_camera  kinect_rgbd
+ros2 run vision_node    face_tracker_node
+ros2 run gesture_node   gesture_command_node                 # gesture recognizer
+ros2 run gesture_node   gesture_command_node --ros-args -p debug:=true   # + feature logging
+ros2 run behavior_node  pet_behavior_node --ros-args -p cmd_vel_topic:=/commands/velocity
+ros2 launch kobuki_node kobuki_node-launch.py                # Kobuki driver alone
+ros2 launch kinect_camera kinect_rgbd.launch.py              # Kinect alone
+```
+
+---
+
+## Inspect / debug at runtime
+
+```bash
+ros2 node list
+ros2 topic list
+ros2 topic echo /gesture/tracking          # gesture command events
+ros2 topic echo /vision/target             # detected face (PointStamped)
+ros2 topic echo /commands/velocity         # velocity sent to the base
+ros2 topic hz   /kinect/rgb/image_raw      # camera frame rate
+ros2 topic echo /odom --field pose.pose.position
+ros2 topic echo /sensors/core --field battery   # Kobuki battery (decivolts: 154 = 15.4 V)
+ros2 param list /pet_behavior_node
+```
+
+### Key topics
+| Topic | Type | Who |
+|---|---|---|
+| `/kinect/rgb/image_raw`, `/kinect/depth/image_raw` | Image | kinect_rgbd → |
+| `/vision/target` | PointStamped | face_tracker → |
+| `/gesture/tracking` | String | gesture_command → |
+| `/commands/velocity` | Twist | behavior → Kobuki |
+| `/qbot/sound` | String | behavior (audio cue) |
+| `/odom`, `/sensors/core` | Odometry / sensor | Kobuki → |
+
+---
+
+## Hardware tests / recovery
+
+```bash
+# Kinect: recover a stuck/dropped device (camera/audio gone from lsusb)
+sudo python3 scripts/kinect_usb_reset.py
+lsusb | grep 045e                          # expect Motor + Audio + Camera
+freenect-camtest                           # raw stream test (Ctrl-C to stop)
+
+# Kobuki: confirm the base link + a gentle live nudge (robot must be on the floor)
+ls -l /dev/kobuki
+python3 scripts/kobuki_drive_test.py       # run `ros2 launch kobuki_node kobuki_node-launch.py` first
+
+# Maneuver logic in sim (no robot needed) — run pet_behavior_node first
+python3 scripts/sim_behavior_test.py
+```
+
+---
+
+## Gesture calibration
+
+```bash
+# Watch what the recognizer sees while you make gestures
+ros2 run gesture_node gesture_command_node --ros-args -p debug:=true
+# logs: hand: fingers=N index_only=T/F cx=.. cy=..   and   gesture recognised -> X
+
+# Tunables (ROS params on gesture_command_node)
+#   process_hz   inference rate cap (default 12)
+#   swipe_dx     swipe sensitivity for turn_left/right (default 0.5)
+#   score_threshold / conf_threshold  palm / landmark model thresholds
+```
+
+### Gesture vocabulary
+| Sign | Command | Robot |
+|---|---|---|
+| Open palm held | stop | halt now |
+| Curl hand twice | forward | drive forward until stop |
+| Fist held | backward | drive backward until stop |
+| Index finger circle | rotate360 | spin 360° |
+| Open-hand swipe left / right | turn_left / turn_right | sidestep + face you |
+| Rapid open-hand wave | tail_wag | wag 3× |
+| (face seen, idle) | — | wiggle every ~10 s |
+
+---
+
+## Stop everything
+
+```bash
+# In the launch terminal: Ctrl-C  (never kill -9 the Kinect node — it leaves the
+# USB device claimed; if that happens, run scripts/kinect_usb_reset.py)
+```
