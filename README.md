@@ -23,6 +23,9 @@ This repository **is** the ROS 2 (`colcon`) workspace.
 | `behavior_node` | `pet_behavior_node` | `/cmd_vel`, `/commands/sound` |
 
 ## Quick start
+> Full step-by-step setup, hardware notes, and troubleshooting are in
+> [`INSTALL.md`](INSTALL.md).
+
 ```bash
 # 1. Install ROS 2 Jazzy + all dependencies + Kinect USB permissions
 #    (needs sudo — you'll be prompted for your password)
