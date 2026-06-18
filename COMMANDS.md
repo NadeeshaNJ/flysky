@@ -12,6 +12,34 @@ for architecture + the gesture vocabulary.
 
 ---
 
+## Live gesture test — the short version
+
+Three commands, one terminal each (source ROS + workspace first, as above).
+
+```bash
+# 1. (Only if the camera is stuck — no frames / "Could not open audio") reset USB:
+sudo python3 scripts/kinect_usb_reset.py
+
+# 2. Camera + gesture recognizer together, with debug logging:
+ros2 launch gesture_node gesture_test.launch.py
+
+# 3. Watch the commands it emits (optional, separate terminal):
+ros2 topic echo /gesture/tracking
+```
+
+Stop with a single **Ctrl-C** in the launch terminal — it shuts the Kinect down
+cleanly. **Never `kill -9`** the camera: libfreenect leaves the USB device
+claimed, and you'll have to run the reset in step 1.
+
+> Sanity check the camera is actually streaming before making gestures:
+> ```bash
+> ros2 topic hz /kinect/rgb/image_raw --qos-reliability best_effort   # expect ~30
+> ```
+> If it prints nothing, the Kinect isn't sending frames — check the **12V power
+> adapter (Y-cable)** is connected, then re-run the reset (step 1).
+
+---
+
 ## Build
 
 ```bash
@@ -111,25 +139,33 @@ python3 scripts/sim_behavior_test.py
 ## Gesture calibration
 
 ```bash
-# Watch what the recognizer sees while you make gestures
+# Watch what the recognizer sees while you make gestures (the launch above
+# already sets debug:=true; this is the node on its own if the camera's running)
 ros2 run gesture_node gesture_command_node --ros-args -p debug:=true
-# logs: hand: fingers=N index_only=T/F cx=.. cy=..   and   gesture recognised -> X
+# logs: hand: label=.. fingers=[t,i,m,r,p] openness=.. point=.. nx=.. ny=.. span=..
+#       and   gesture recognised -> X
 
 # Tunables (ROS params on gesture_command_node)
-#   process_hz   inference rate cap (default 12)
-#   swipe_dx     swipe sensitivity for turn_left/right (default 0.5)
-#   score_threshold / conf_threshold  palm / landmark model thresholds
+#   process_hz          inference rate cap (default 12)
+#   mirror_horizontal   flip turn_left/right if pointing reads mirrored (default true)
+#   score_threshold / conf_threshold   palm / landmark model thresholds
+# Finer thresholds (openness cutoffs, hold times, circle geometry) live in
+# gesture_classifier.py — see GESTURE_ALGORITHM_REFERENCE.md for what each does.
 ```
+
+The debug log is the calibration tool: a flat open palm should read
+`openness` ≳ 0.7 and a fist ≲ 0.3. If a gesture won't fire, watch these values
+while you perform it.
 
 ### Gesture vocabulary
 | Sign | Command | Robot |
 |---|---|---|
-| Open palm held | stop | halt now |
-| Curl hand twice | forward | drive forward until stop |
-| Fist held | backward | drive backward until stop |
-| Index finger circle | rotate360 | spin 360° |
-| Open-hand swipe left / right | turn_left / turn_right | sidestep + face you |
-| Rapid open-hand wave | tail_wag | wag 3× |
+| Open palm held still | stop | halt now (works even mid-maneuver) |
+| Curl hand twice (open↔fist ×2) | forward | drive forward until stop |
+| Closed fist held ~1 s | backward | drive backward until stop |
+| Index finger drawing a circle | rotate360 | spin 360° |
+| Index finger pointed & held left / right | turn_left / turn_right | sidestep + face you |
+| Rapid open-hand side-to-side wave | tail_wag | wag 3× |
 | (face seen, idle) | — | wiggle every ~10 s |
 
 ---

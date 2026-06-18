@@ -1,208 +1,269 @@
-"""Temporal gesture classifier: a stream of HandFeatures -> command events.
+"""Temporal gesture decoder: a stream of HandFeatures -> command events.
 
-Gesture vocabulary (see README / CLAUDE.md). Static poses and dynamic motions
-are distinguished over a short sliding window:
+Ported from the laptop MediaPipe project (see GESTURE_ALGORITHM_REFERENCE.md).
+Unlike a "run recogniser, publish label" approach, commands are confirmed from
+the *temporal* evolution of robust per-frame features (continuous hand openness,
+normalised landmark geometry, majority-voted pose label) supplied on
+``HandFeatures`` by ``hand_tracker.py`` / ``signals.py``.
 
-  stop        open palm (>=4 fingers) held still           -> immediate halt
-  forward     "come closer": curl the hand twice            -> drive forward
-              (open->fist alternation, >=2 times)
-  backward    closed fist held still ~1s                     -> drive backward
-  rotate360   one finger drawing a circle                    -> spin 360 in place
-  turn_left   open-hand swipe toward image-left              -> sidestep-left maneuver
-  turn_right  open-hand swipe toward image-right             -> sidestep-right maneuver
-  tail_wag    rapid side-to-side hand wave (>=3 reversals)   -> wag 3x
+Gesture vocabulary (decided with the team, 2026-06-18):
 
-Thresholds are deliberately exposed; they need on-hand calibration (we can't
-tune them blind). The node logs features at debug level to help.
+  stop        open palm held still                  -> immediate halt
+  forward     "come closer": curl the hand twice    -> drive forward
+              (openness open->closed->open x2)
+  backward    closed fist held still ~1s            -> drive backward
+  rotate360   index finger drawing a circle         -> spin 360 in place
+  turn_left   index finger pointed & held LEFT      -> sidestep-left maneuver
+  turn_right  index finger pointed & held RIGHT     -> sidestep-right maneuver
+  tail_wag    open-hand side-to-side wave (>=3 rev) -> wag 3x
+
+All thresholds are exposed for on-hand calibration; the node logs features at
+debug level. Coordinates here are the normalised [0, 1] image space carried on
+HandFeatures (nx/ny/openness/index_tip/span/label/pointing) — never mix in the
+legacy [-1, 1] cx/cy fields.
 """
 
 import math
-from collections import deque
 
-
-def is_open(f):
-    """Open palm: 4+ extended fingers (reliable from ONNX landmarks)."""
-    return f.present and f.fingers >= 4
-
-
-def is_closed(f):
-    """Closed fist: at most one extended finger and not a pointing pose.
-
-    Landmark finger-counting often miscounts a wrapped thumb as extended, so a
-    real fist reads fingers==1; we accept that as long as it isn't the index
-    finger (pointing), which is reserved for the rotate gesture."""
-    return f.present and f.fingers <= 1 and not f.index_only
+from gesture_node.signals import (
+    MajorityLabelFilter,
+    BeckonOscillationDetector,
+    count_axis_reversals,
+)
 
 
 class GestureClassifier:
     def __init__(self,
-                 window=2.5,           # s of history kept
-                 cooldown=1.5,         # s lockout after firing
-                 stop_hold=0.3,        # s open palm must persist
-                 back_hold=1.0,        # s fist must persist
-                 swipe_window=0.7,     # s to measure a swipe
-                 swipe_dx=0.45,        # min net horizontal travel (normalised)
-                 wag_window=1.0,       # s to measure a wag
-                 wag_reversals=3,      # direction changes for a wag
-                 rotate_window=2.0,    # s to accumulate finger circle
-                 rotate_angle=4.7,     # rad (~1.5 turns) to trigger rotate
-                 motion_deadband=0.04):
-        self.window = window
+                 cooldown=1.5,            # s global lockout after a fire
+                 span_min=0.055,          # reject tiny/noisy detections
+                 # general
+                 absence_grace=0.3,       # s of lost detection tolerated before reset
+                 # stop
+                 stop_open=0.70,          # openness for an "open palm"
+                 stop_hold=0.45,          # s the palm must persist
+                 stop_motion_tol=0.04,    # max palm drift while "still"
+                 wave_open=0.55,          # openness to keep collecting the wave/palm track
+                 # forward (beckon)
+                 beckon_oscillations=2,
+                 beckon_window=4.5,
+                 beckon_open=0.62,
+                 beckon_closed=0.32,
+                 beckon_min_half=0.18,
+                 # backward (fist held)
+                 fist_closed=0.32,        # openness at/below = closed
+                 fist_release=0.50,       # openness above = no longer a fist
+                 back_hold=1.0,           # s the fist must persist
+                 # rotate360 (index circle)
+                 rotate_window=3.2,
+                 rotate_min_samples=12,
+                 rotate_min_duration=0.55,
+                 rotate_min_radius=0.04,
+                 rotate_net_angle=1.55 * math.pi,
+                 rotate_total_angle=1.75 * math.pi,
+                 rotate_quadrants=4,
+                 # turn (index point held left/right)
+                 point_hold=0.55,
+                 mirror_horizontal=True,  # camera image is mirrored vs the user
+                 # tail_wag (open-hand wave)
+                 wag_window=2.4,
+                 wag_min_samples=8,
+                 wag_amp=0.08,
+                 wag_sweep=0.18,
+                 wag_reversals=3):
         self.cooldown = cooldown
+        self.span_min = span_min
+        self.absence_grace = absence_grace
+
+        self.stop_open = stop_open
         self.stop_hold = stop_hold
+        self.stop_motion_tol = stop_motion_tol
+        self.wave_open = wave_open
+
+        self.fist_closed = fist_closed
+        self.fist_release = fist_release
         self.back_hold = back_hold
-        self.swipe_window = swipe_window
-        self.swipe_dx = swipe_dx
-        self.wag_window = wag_window
-        self.wag_reversals = wag_reversals
+
         self.rotate_window = rotate_window
-        self.rotate_angle = rotate_angle
-        self.deadband = motion_deadband
+        self.rotate_min_samples = rotate_min_samples
+        self.rotate_min_duration = rotate_min_duration
+        self.rotate_min_radius = rotate_min_radius
+        self.rotate_net_angle = rotate_net_angle
+        self.rotate_total_angle = rotate_total_angle
+        self.rotate_quadrants = rotate_quadrants
 
-        self.buf = deque()          # (t, feat)
+        self.point_hold = point_hold
+        self.mirror_horizontal = mirror_horizontal
+
+        self.wag_window = wag_window
+        self.wag_min_samples = wag_min_samples
+        self.wag_amp = wag_amp
+        self.wag_sweep = wag_sweep
+        self.wag_reversals = wag_reversals
+
+        self.labels = MajorityLabelFilter()
+        self.beckon = BeckonOscillationDetector(
+            beckon_oscillations, beckon_window, beckon_open, beckon_closed,
+            beckon_min_half)
+
+        # sliding tracks of (t, value...) — pruned per detector window
+        self.palm_track = []     # (t, cx, cy)  while open
+        self.point_track = []    # (t, tip_x, tip_y)  while POINTING
+        self._open_since = None
+        self._fist_since = None
+        self._point_dir = None
+        self._point_since = None
+        self._last_present = -1e9
         self._locked_until = 0.0
+        self._t_cur = 0.0
 
+    def reset(self):
+        self.labels.reset()
+        self.beckon.reset()
+        self.palm_track.clear()
+        self.point_track.clear()
+        self._open_since = None
+        self._fist_since = None
+        self._point_dir = None
+        self._point_since = None
+
+    # -- main entry --------------------------------------------------------
     def update(self, t, feat):
         """Feed one frame; return a command string or None."""
-        self.buf.append((t, feat))
-        while self.buf and t - self.buf[0][0] > self.window:
-            self.buf.popleft()
+        self._t_cur = t
+        if not feat.present or feat.span < self.span_min:
+            # Tolerate brief detection dropouts (common under wave/curl motion
+            # blur) — only wipe the buffers if the hand is gone long enough that
+            # an in-progress gesture is genuinely over.
+            if (t - self._last_present) > self.absence_grace:
+                self.reset()
+            return None
+        self._last_present = t
 
-        # STOP is always responsive — it must abort a running maneuver even during
-        # the post-gesture cooldown.
-        held = self._recent(t, self.stop_hold)
-        if self._sustained(t, self.stop_hold, is_open) and \
-                self._span_motion(held) < self.deadband * 2:
-            self._locked_until = t + self.cooldown
-            self.buf.clear()
+        label = self.labels.update(feat.label)
+        openness = feat.openness
+        cx, cy = feat.nx, feat.ny
+        tip = feat.index_tip
+
+        # feed every-frame detectors
+        beckon_ready = self.beckon.update(t, openness)
+
+        # Palm track (used by BOTH stop and tail_wag). Collect while the hand is
+        # reasonably open (wave_open, 0.55) and only clear when it clearly isn't —
+        # a waving hand tilts/blurs and dips under the 0.70 stop threshold, so
+        # gating the buffer at 0.70 would wipe the wave before it accumulates.
+        if openness >= self.wave_open:
+            self.palm_track.append((t, cx, cy))
+        else:
+            self.palm_track.clear()
+        self._prune(self.palm_track, t, self.wag_window)
+
+        # Stop needs a *clearly* open palm (0.70) held — track that separately.
+        if openness >= self.stop_open:
+            if self._open_since is None:
+                self._open_since = t
+        else:
+            self._open_since = None
+
+        if label == 'POINTING':
+            self.point_track.append((t, tip[0], tip[1]))
+        else:
+            self.point_track.clear()
+        self._prune(self.point_track, t, self.rotate_window)
+
+        # fist hold (backward) — sustained, non-oscillating closed hand. Must NOT
+        # be a pointing pose: rotate/turn both hold POINTING (and a pointing hand
+        # can read low-openness), so exclude it to avoid a false backward.
+        if openness <= self.fist_closed and label != 'POINTING':
+            if self._fist_since is None:
+                self._fist_since = t
+        elif openness > self.fist_release or label == 'POINTING':
+            self._fist_since = None
+
+        # point hold (turn) — same horizontal direction held
+        if label == 'POINTING' and feat.pointing in ('LEFT', 'RIGHT'):
+            if feat.pointing != self._point_dir:
+                self._point_dir = feat.pointing
+                self._point_since = t
+        else:
+            self._point_dir = None
+            self._point_since = None
+
+        # STOP is always responsive: it must abort a running maneuver even
+        # during the post-gesture cooldown.
+        if self._stop_ready(t):
+            self._fire()
             return 'stop'
 
         if t < self._locked_until:
             return None
 
-        cmd = self._classify(t)
-        if cmd:
-            self._locked_until = t + self.cooldown
-            self.buf.clear()
-        return cmd
+        # Evaluation order mirrors the reference decoder.
+        if self._wave_ready(t):
+            self._fire()
+            return 'tail_wag'
 
-    # -- helpers ----------------------------------------------------------
-    def _recent(self, t, span):
-        return [(tt, f) for (tt, f) in self.buf if t - tt <= span]
-
-    def _present(self, items):
-        return [f for _, f in items if f.present]
-
-    def _classify(self, t):
-        present = self._present(self.buf)
-        if not present:
-            return None
-
-        # (STOP is handled in update() so it stays responsive during cooldown.)
-
-        # 2) FORWARD — curl twice (>=2 open->closed transitions).
-        if self._curl_count() >= 2:
+        if beckon_ready:
+            self.beckon.consume()
+            self._fire()
             return 'forward'
 
-        # 3) ROTATE360 — single finger drawing a circle.
-        if self._finger_circle(t) >= self.rotate_angle:
+        if self._circle_ready(t):
+            self._fire()
             return 'rotate360'
 
-        # 4) TAIL_WAG — rapid side-to-side wave with an OPEN hand (many reversals,
-        # small net). Requiring an open hand keeps pointing-circles (rotate) and
-        # fists out of this branch.
-        wag = self._recent(t, self.wag_window)
-        wp = self._present(wag)
-        if len(wp) >= 3 and sum(f.fingers >= 3 for f in wp) >= len(wp) // 2:
-            rev, net = self._reversals_and_net(wag)
-            if rev >= self.wag_reversals and abs(net) < self.swipe_dx:
-                return 'tail_wag'
+        turn = self._turn_ready(t)
+        if turn:
+            self._fire()
+            return turn
 
-        # 5) TURN — a deliberate, predominantly-horizontal open-hand swipe. Must be
-        # mostly open, travel >= swipe_dx horizontally, be far more horizontal than
-        # vertical, and not just wobble — this keeps incidental hand drift from
-        # triggering turns.
-        swipe = self._recent(t, self.swipe_window)
-        sp = self._present(swipe)
-        if len(sp) >= 4 and sum(f.fingers >= 3 for f in sp) >= len(sp) // 2:
-            xs = [f.cx for f in sp]
-            ys = [f.cy for f in sp]
-            net_x = xs[-1] - xs[0]
-            net_y = ys[-1] - ys[0]
-            rev, _ = self._reversals_and_net(swipe)
-            if abs(net_x) >= self.swipe_dx and abs(net_x) > 1.8 * abs(net_y) and rev <= 1:
-                # Mapping swapped: the camera image is mirrored relative to the user.
-                return 'turn_right' if net_x < 0 else 'turn_left'
-
-        # 6) BACKWARD — thumbs-down held.
-        if self._sustained(t, self.back_hold, lambda f: f.thumb_down):
+        if self._fist_since is not None and (t - self._fist_since) >= self.back_hold:
+            self._fire()
             return 'backward'
 
         return None
 
-    def _sustained(self, t, span, pred, min_frames=3):
-        """True if the buffer covers >= span seconds and every present frame in
-        the last `span` satisfies `pred` (i.e. the pose was actually held)."""
-        items = self._recent(t, span)
-        if not items or (t - items[0][0]) < span * 0.9:
+    # -- detectors ---------------------------------------------------------
+    def _stop_ready(self, t):
+        if self._open_since is None or (t - self._open_since) < self.stop_hold:
             return False
-        pres = self._present(items)
-        return len(pres) >= min_frames and all(pred(f) for f in pres)
+        recent = [p for p in self.palm_track if t - p[0] <= 0.5]
+        if len(recent) < 3:
+            return False
+        xs = [p[1] for p in recent]
+        # if the palm is sweeping sideways it's probably a wave, not a stop
+        return (max(xs) - min(xs)) <= self.stop_motion_tol * 3
 
-    def _curl_count(self):
-        """Count open->closed transitions across the whole buffer."""
-        states = []
-        for _, f in self.buf:
-            if not f.present:
-                continue
-            if is_open(f):
-                states.append('open')
-            elif is_closed(f):
-                states.append('closed')
-        transitions = 0
-        for a, b in zip(states, states[1:]):
-            if a == 'open' and b == 'closed':
-                transitions += 1
-        return transitions
+    def _wave_ready(self, t):
+        pts = [p for p in self.palm_track if t - p[0] <= self.wag_window]
+        if len(pts) < self.wag_min_samples:
+            return False
+        xs = [p[1] for p in pts]
+        if (max(xs) - min(xs)) < self.wag_amp * 2:
+            return False
+        rev = count_axis_reversals(xs, self.wag_sweep / 2.4)
+        return rev >= self.wag_reversals
 
-    def _span_motion(self, items):
-        pts = [(f.cx, f.cy) for _, f in items if f.present]
-        if len(pts) < 2:
-            return 0.0
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        return math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    def _circle_ready(self, t):
+        pts = [p for p in self.point_track if t - p[0] <= self.rotate_window]
+        if len(pts) < self.rotate_min_samples:
+            return False
+        if (pts[-1][0] - pts[0][0]) < self.rotate_min_duration:
+            return False
 
-    def _reversals_and_net(self, items):
-        xs = [f.cx for _, f in items if f.present]
-        if len(xs) < 3:
-            return 0, 0.0
-        reversals, last_sign = 0, 0
-        for a, b in zip(xs, xs[1:]):
-            dx = b - a
-            if abs(dx) < self.deadband:
-                continue
-            sign = 1 if dx > 0 else -1
-            if last_sign and sign != last_sign:
-                reversals += 1
-            last_sign = sign
-        return reversals, xs[-1] - xs[0]
+        xs = [p[1] for p in pts]
+        ys = [p[2] for p in pts]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        radii = [math.hypot(x - cx, y - cy) for x, y in zip(xs, ys)]
+        mean_r = sum(radii) / len(radii)
+        if mean_r < self.rotate_min_radius:
+            return False
+        var = sum((r - mean_r) ** 2 for r in radii) / len(radii)
+        if math.sqrt(var) > mean_r * 0.95:
+            return False
 
-    def _finger_circle(self, t):
-        # Detect drawing a circle in the air: accumulate the angle of the index
-        # fingertip about the *centre of its own trajectory*, so it works whether
-        # the finger pivots or the whole hand moves in a circle.
-        items = self._recent(t, self.rotate_window)
-        pts = [(f.tip_x, f.tip_y) for _, f in items if f.present and f.index_only]
-        if len(pts) < 6:
-            return 0.0
-        cxm = sum(p[0] for p in pts) / len(pts)
-        cym = sum(p[1] for p in pts) / len(pts)
-        # require a real radius, not jitter around a still fingertip
-        radius = max(math.hypot(px - cxm, py - cym) for px, py in pts)
-        if radius < 0.08:
-            return 0.0
-        angs = [math.atan2(py - cym, px - cxm) for px, py in pts]
+        angs = [math.atan2(y - cy, x - cx) for x, y in zip(xs, ys)]
+        net = 0.0
         total = 0.0
         for a, b in zip(angs, angs[1:]):
             d = b - a
@@ -210,5 +271,40 @@ class GestureClassifier:
                 d -= 2 * math.pi
             while d < -math.pi:
                 d += 2 * math.pi
-            total += d
-        return abs(total)
+            net += d
+            total += abs(d)
+        if abs(net) < self.rotate_net_angle or total < self.rotate_total_angle:
+            return False
+
+        quads = set()
+        for x, y in zip(xs, ys):
+            quads.add((1 if x >= cx else 0, 1 if y >= cy else 0))
+        return len(quads) >= self.rotate_quadrants
+
+    def _turn_ready(self, t):
+        if self._point_since is None:
+            return None
+        if (t - self._point_since) < self.point_hold:
+            return None
+        d = self._point_dir
+        if self.mirror_horizontal:
+            # camera mirrors the user: pointing image-RIGHT means the user's left
+            return 'turn_left' if d == 'RIGHT' else 'turn_right'
+        return 'turn_left' if d == 'LEFT' else 'turn_right'
+
+    # -- helpers -----------------------------------------------------------
+    @staticmethod
+    def _prune(track, t, window):
+        while track and (t - track[0][0]) > window:
+            track.pop(0)
+
+    def _fire(self):
+        # cooldown runs from the current frame's time, stashed by update().
+        self._locked_until = self._t_cur + self.cooldown
+        self.palm_track.clear()
+        self.point_track.clear()
+        self._open_since = None
+        self._fist_since = None
+        self._point_dir = None
+        self._point_since = None
+        self.labels.reset()

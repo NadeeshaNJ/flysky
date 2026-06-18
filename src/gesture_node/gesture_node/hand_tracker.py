@@ -12,7 +12,8 @@ gives per-finger joint positions (~100% detection, 0.98+ confidence in testing).
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 import onnxruntime as ort
@@ -22,6 +23,7 @@ ort.set_default_logger_severity(3)  # 3 = ERROR (hide INFO/WARNING)
 
 from gesture_node.mp_models.mp_palmdet import MPPalmDet
 from gesture_node.mp_models.mp_handpose import MPHandPose
+from gesture_node import signals
 
 # MediaPipe 21-landmark indices
 WRIST = 0
@@ -45,6 +47,19 @@ class HandFeatures:
     index_only: bool = False  # pointing pose (only index extended)
     thumb_down: bool = False  # thumbs-down pose (fist + thumb pointing down)
 
+    # Richer features for the temporal decoder (see signals.py). All in the
+    # normalised [0, 1] image space — keep these separate from cx/cy/tip_x/tip_y
+    # which are in the legacy [-1, 1] space.
+    landmarks: Optional[np.ndarray] = None   # (21, 3) normalised
+    finger_pattern: list = field(default_factory=list)  # [thumb,index,mid,ring,pinky]
+    label: str = 'NONE'      # OPEN_PALM/POINTING/FIST/...
+    openness: float = 0.0    # 0..1 continuous open-vs-fist
+    nx: float = 0.0          # hand centre x in [0, 1]
+    ny: float = 0.0          # hand centre y in [0, 1]
+    span: float = 0.0        # bounding span in [0, 1]
+    index_tip: tuple = (0.0, 0.0)        # index fingertip in [0, 1]
+    pointing: str = 'NONE'   # LEFT/RIGHT/UP/DOWN/TOWARDS_CAMERA/NONE
+
 
 class HandLandmarkTracker:
     def __init__(self, model_dir, score_threshold=0.5, conf_threshold=0.6):
@@ -56,38 +71,59 @@ class HandLandmarkTracker:
                     f'ONNX model not found: {p}. Run setup_qbot_env.sh to download it.')
         self.palm = MPPalmDet(palm_path, scoreThreshold=score_threshold)
         self.hand = MPHandPose(hand_path, confThreshold=conf_threshold)
+        # Smooth landmarks before deriving features (reference order:
+        # detect -> smooth -> features). Stateful across frames.
+        self.smoother = signals.LandmarkSmoother()
 
     def process(self, bgr):
         """Run the pipeline on a BGR image; return HandFeatures."""
         h, w = bgr.shape[:2]
         dets = self.palm.infer(bgr)
         if dets is None or len(dets) == 0:
+            self.smoother.reset()
             return HandFeatures(present=False)
 
         res = self.hand.infer(bgr, dets[0])
         if res is None:
+            self.smoother.reset()
             return HandFeatures(present=False)
 
-        lms = res[4:67].reshape(21, 3)[:, :2]   # screen-space (x, y) px
-        wrist = lms[WRIST]
+        lms_px = res[4:67].reshape(21, 3)            # screen-space (x, y, z) px
+        wrist = lms_px[WRIST][:2]
+
+        # Normalise to [0, 1]: x by width, y by height, z by width (MediaPipe-ish
+        # relative depth). The temporal decoder consumes this; legacy [-1, 1]
+        # fields below are kept so the current classifier still runs.
+        norm = lms_px.copy().astype(np.float32)
+        norm[:, 0] /= w
+        norm[:, 1] /= h
+        norm[:, 2] /= w
+        norm = self.smoother.update(norm)
 
         def extended(tip, pip, slack=1.0):
-            return np.linalg.norm(lms[tip] - wrist) > np.linalg.norm(lms[pip] - wrist) * slack
+            return np.linalg.norm(lms_px[tip][:2] - wrist) > np.linalg.norm(lms_px[pip][:2] - wrist) * slack
 
         ups = [extended(t, p) for t, p in zip(TIPS, PIPS)]
-        thumb = bool(np.linalg.norm(lms[THUMB_TIP] - wrist)
-                     > np.linalg.norm(lms[THUMB_MCP] - wrist) * 1.15)
+        thumb = bool(np.linalg.norm(lms_px[THUMB_TIP][:2] - wrist)
+                     > np.linalg.norm(lms_px[THUMB_MCP][:2] - wrist) * 1.15)
         fingers = int(sum(ups) + thumb)
         index_only = bool(ups[0] and not ups[1] and not ups[2] and not ups[3])
 
         # Thumbs-down: the four fingers are curled and the thumb points downward
         # (tip below its own MCP joint in image-y). Orientation-robust enough to
         # distinguish from a plain fist (thumb tucked, not pointing down).
-        thumb_dy = lms[THUMB_TIP][1] - lms[THUMB_MCP][1]   # +ve = tip below MCP
+        thumb_dy = lms_px[THUMB_TIP][1] - lms_px[THUMB_MCP][1]   # +ve = tip below MCP
         thumb_down = bool(sum(ups) == 0 and thumb_dy > 18)
 
-        palm_c = lms[PALM_IDS].mean(axis=0)
-        tip = lms[INDEX_TIP]
+        # Richer normalised features (signals.py).
+        finger_pattern = signals.fingers_up(norm)
+        label = signals.label_from_finger_pattern(finger_pattern)
+        openness = signals.hand_openness(norm)
+        nx, ny, span = signals.hand_center_and_span(norm)
+        pointing = signals.pointing_direction(norm)
+
+        palm_c = lms_px[PALM_IDS].mean(axis=0)
+        tip = lms_px[INDEX_TIP]
         return HandFeatures(
             present=True,
             cx=(palm_c[0] - w / 2.0) / (w / 2.0),
@@ -97,4 +133,11 @@ class HandLandmarkTracker:
             tip_y=(tip[1] - h / 2.0) / (h / 2.0),
             index_only=index_only,
             thumb_down=thumb_down,
+            landmarks=norm,
+            finger_pattern=finger_pattern,
+            label=label,
+            openness=openness,
+            nx=nx, ny=ny, span=span,
+            index_tip=(float(norm[INDEX_TIP][0]), float(norm[INDEX_TIP][1])),
+            pointing=pointing,
         )

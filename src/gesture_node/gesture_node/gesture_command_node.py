@@ -43,7 +43,7 @@ class GestureCommandNode(Node):
         self.declare_parameter('score_threshold', 0.5)
         self.declare_parameter('conf_threshold', 0.6)
         self.declare_parameter('process_hz', 12.0)   # cap inference rate
-        self.declare_parameter('swipe_dx', 0.45)
+        self.declare_parameter('mirror_horizontal', True)  # flip turn L/R
         self.declare_parameter('debug', False)
 
         rgb_topic = self.get_parameter('rgb_topic').value
@@ -58,7 +58,7 @@ class GestureCommandNode(Node):
             score_threshold=float(self.get_parameter('score_threshold').value),
             conf_threshold=float(self.get_parameter('conf_threshold').value))
         self.classifier = GestureClassifier(
-            swipe_dx=float(self.get_parameter('swipe_dx').value))
+            mirror_horizontal=bool(self.get_parameter('mirror_horizontal').value))
 
         # Keep-last-1, best-effort: the transport holds only the freshest frame so
         # we never build a backlog (ONNX inference is slower than the frame rate).
@@ -94,8 +94,9 @@ class GestureCommandNode(Node):
 
         if self.debug and feat.present:
             self.get_logger().info(
-                f'hand: fingers={feat.fingers} index_only={feat.index_only} '
-                f'thumb_down={feat.thumb_down} cx={feat.cx:+.2f} cy={feat.cy:+.2f}',
+                f'hand: label={feat.label} fingers={feat.finger_pattern} '
+                f'openness={feat.openness:.2f} point={feat.pointing} '
+                f'nx={feat.nx:.2f} ny={feat.ny:.2f} span={feat.span:.2f}',
                 throttle_duration_sec=1.0)
 
         cmd = self.classifier.update(t, feat)
