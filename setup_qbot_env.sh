@@ -85,6 +85,13 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02c2", MODE="0666", 
 SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02b0", MODE="0666", GROUP="plugdev"
 RULES
 
+# The in-kernel gspca_kinect driver claims the camera and blocks libfreenect.
+sudo tee /etc/modprobe.d/blacklist-kinect.conf >/dev/null <<'EOF'
+# Let libfreenect (OpenKinect) own the Kinect camera instead of the kernel driver
+blacklist gspca_kinect
+EOF
+sudo modprobe -r gspca_kinect 2>/dev/null || true
+
 # Kobuki base: FTDI FT232 USB-serial -> stable /dev/kobuki symlink + group access
 sudo tee /etc/udev/rules.d/60-kobuki.rules >/dev/null <<'RULES'
 # Kobuki / TurtleBot2 mobile base (FTDI FT232, vendor 0403 product 6001)
