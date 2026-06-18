@@ -81,6 +81,7 @@ class GestureCommandNode(Node):
         if msg is None:
             return
         self._latest = None             # consume so each frame is handled once
+        t = self.get_clock().now().nanoseconds * 1e-9
 
         try:
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
